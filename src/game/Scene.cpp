@@ -240,7 +240,16 @@ namespace application::game
 					application::game::BancEntity Entity;
 					if (!Entity.FromByml(ActorNode))
 					{
-						application::util::Logger::Error("Scene", "Error while parsing BancEntity");
+						uint64_t Hash = 0;
+						uint64_t SRTHash = 0;
+
+						if (ActorNode.HasChild("Hash"))
+							Hash = ActorNode.GetChild("Hash")->GetValue<uint64_t>();
+
+						if (ActorNode.HasChild("SRTHash"))
+							SRTHash = ActorNode.GetChild("SRTHash")->GetValue<uint32_t>();
+
+						application::util::Logger::Error("Scene", "Error while parsing BancEntity, Hash: %lu, SRTHash: %u", Hash, SRTHash);
 						continue;
 					}
 					Entity.mBancType = Type;

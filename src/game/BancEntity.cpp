@@ -463,7 +463,7 @@ namespace application::game
 			return false;
 
 		mGyml = Gyml;
-
+		 
 		return GenerateBancEntityInfo();
 	}
 
