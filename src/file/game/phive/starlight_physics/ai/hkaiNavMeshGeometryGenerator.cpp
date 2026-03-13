@@ -1,15 +1,16 @@
 #include <file/game/phive/starlight_physics/ai/hkaiNavMeshGeometryGenerator.h>
 
 #include <glm/geometric.hpp>
-#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <meshoptimizer.h>
+#include <util/Logger.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <queue>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -17,30 +18,7 @@
 namespace
 {
     constexpr float DEG_TO_RAD = 0.01745329251994329576923690768489f;
-    constexpr uint16_t INVALID_FACE_INDEX = 0xFFFF;
-
-    struct VertexKey
-    {
-        int64_t mX = 0;
-        int64_t mY = 0;
-        int64_t mZ = 0;
-
-        bool operator==(const VertexKey& other) const
-        {
-            return mX == other.mX && mY == other.mY && mZ == other.mZ;
-        }
-    };
-
-    struct VertexKeyHash
-    {
-        size_t operator()(const VertexKey& key) const
-        {
-            const uint64_t h0 = static_cast<uint64_t>(key.mX) * 0x9E3779B185EBCA87ull;
-            const uint64_t h1 = static_cast<uint64_t>(key.mY) * 0xC2B2AE3D27D4EB4Full;
-            const uint64_t h2 = static_cast<uint64_t>(key.mZ) * 0x165667B19E3779F9ull;
-            return static_cast<size_t>(h0 ^ h1 ^ h2);
-        }
-    };
+    constexpr uint16_t INVALID_FACE_INDEX = 0xFFFFu;
 
     struct QuantizedVertexKey
     {
@@ -109,13 +87,6 @@ namespace
         }
     };
 
-    struct WorkingTriangle
-    {
-        uint32_t mVertices[3] = { 0, 0, 0 };
-        glm::vec3 mNormal = glm::vec3(0.0f);
-        float mArea = 0.0f;
-    };
-
     struct EdgeRef
     {
         uint32_t mFace = 0;
@@ -124,16 +95,31 @@ namespace
         uint32_t mB = 0;
     };
 
-    struct SimplificationSettings
+    enum class QuantizationFailureReason : uint8_t
     {
-        bool mEnabled = true;
-        float mTargetRatio = 0.18f;
-        float mMaxError = 0.20f;
+        None = 0,
+        EmptyRaw,
+        SpanOverflow,
+        VertexOverflow,
+        FaceOverflow,
+        Collapsed
+    };
+
+    struct VoxelCoord
+    {
+        int mX = 0;
+        int mY = 0;
+        int mZ = 0;
     };
 
     inline bool IsFiniteVec3(const glm::vec3& value)
     {
         return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    }
+
+    inline float ClampToRange(float value, float minValue, float maxValue)
+    {
+        return std::max(minValue, std::min(value, maxValue));
     }
 
     inline float SnapToBoundary(float value, float minValue, float maxValue, float tolerance)
@@ -151,6 +137,21 @@ namespace
         return value;
     }
 
+    inline uint16_t ClampToU16(int32_t value)
+    {
+        if (value <= 0)
+        {
+            return 0;
+        }
+
+        if (value >= 0xFFFF)
+        {
+            return 0xFFFF;
+        }
+
+        return static_cast<uint16_t>(value);
+    }
+
     inline TriangleKey MakeTriangleKey(uint32_t a, uint32_t b, uint32_t c)
     {
         uint32_t sorted[3] = { a, b, c };
@@ -163,797 +164,86 @@ namespace
         return (a < b) ? UndirectedEdgeKey{ a, b } : UndirectedEdgeKey{ b, a };
     }
 
-    inline int32_t QuantizeToInt(float value, float step)
+    inline uint64_t MakeVoxelKey(int x, int y, int z)
     {
-        return static_cast<int32_t>(std::llround(value / step));
+        const uint64_t ux = static_cast<uint64_t>(static_cast<uint32_t>(x) & 0x1FFFFFu);
+        const uint64_t uy = static_cast<uint64_t>(static_cast<uint32_t>(y) & 0x1FFFFFu);
+        const uint64_t uz = static_cast<uint64_t>(static_cast<uint32_t>(z) & 0x1FFFFFu);
+        return (ux << 42) | (uy << 21) | uz;
     }
 
-    inline float ClampToRange(float value, float minValue, float maxValue)
+    float DistancePointTriangleSquared(const glm::vec3& p, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
     {
-        return std::max(minValue, std::min(value, maxValue));
+        const glm::vec3 ab = b - a;
+        const glm::vec3 ac = c - a;
+        const glm::vec3 ap = p - a;
+
+        const float d1 = glm::dot(ab, ap);
+        const float d2 = glm::dot(ac, ap);
+        if (d1 <= 0.0f && d2 <= 0.0f)
+        {
+            return glm::dot(ap, ap);
+        }
+
+        const glm::vec3 bp = p - b;
+        const float d3 = glm::dot(ab, bp);
+        const float d4 = glm::dot(ac, bp);
+        if (d3 >= 0.0f && d4 <= d3)
+        {
+            return glm::dot(bp, bp);
+        }
+
+        const float vc = d1 * d4 - d3 * d2;
+        if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f)
+        {
+            const float v = d1 / (d1 - d3);
+            const glm::vec3 proj = a + v * ab;
+            const glm::vec3 diff = p - proj;
+            return glm::dot(diff, diff);
+        }
+
+        const glm::vec3 cp = p - c;
+        const float d5 = glm::dot(ab, cp);
+        const float d6 = glm::dot(ac, cp);
+        if (d6 >= 0.0f && d5 <= d6)
+        {
+            return glm::dot(cp, cp);
+        }
+
+        const float vb = d5 * d2 - d1 * d6;
+        if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f)
+        {
+            const float w = d2 / (d2 - d6);
+            const glm::vec3 proj = a + w * ac;
+            const glm::vec3 diff = p - proj;
+            return glm::dot(diff, diff);
+        }
+
+        const float va = d3 * d6 - d5 * d4;
+        if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f)
+        {
+            const float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+            const glm::vec3 proj = b + w * (c - b);
+            const glm::vec3 diff = p - proj;
+            return glm::dot(diff, diff);
+        }
+
+        const glm::vec3 n = glm::cross(ab, ac);
+        const float nLenSq = glm::dot(n, n);
+        if (nLenSq <= 1e-12f)
+        {
+            return glm::dot(ap, ap);
+        }
+
+        const float dist = glm::dot(ap, n) / std::sqrt(nLenSq);
+        return dist * dist;
     }
 
-    inline uint16_t ClampToU16(int32_t value)
-    {
-        if (value < 0)
-        {
-            return 0;
-        }
-
-        if (value > 0xFFFF)
-        {
-            return 0xFFFF;
-        }
-
-        return static_cast<uint16_t>(value);
-    }
-
-    inline glm::vec3 DequantizeVertex(const QuantizedVertexKey& vertex, const float boundsMin[3], float cs, float ch)
-    {
-        return glm::vec3(
-            boundsMin[0] + static_cast<float>(vertex.mX) * cs,
-            boundsMin[1] + static_cast<float>(vertex.mY) * ch,
-            boundsMin[2] + static_cast<float>(vertex.mZ) * cs);
-    }
-
-    struct Bucket2DKey
-    {
-        int32_t mX = 0;
-        int32_t mZ = 0;
-
-        bool operator==(const Bucket2DKey& other) const
-        {
-            return mX == other.mX && mZ == other.mZ;
-        }
-    };
-
-    struct Bucket2DKeyHash
-    {
-        size_t operator()(const Bucket2DKey& key) const
-        {
-            const uint64_t x = static_cast<uint32_t>(key.mX);
-            const uint64_t z = static_cast<uint32_t>(key.mZ);
-            return static_cast<size_t>((x * 73856093ull) ^ (z * 19349663ull));
-        }
-    };
-
-    bool SampleTriangleHeightAtXZ(
-        const glm::vec3& a,
-        const glm::vec3& b,
-        const glm::vec3& c,
-        float sampleX,
-        float sampleZ,
-        float& sampleYOut)
-    {
-        const float det = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
-        if (std::fabs(det) <= 1e-8f)
-        {
-            return false;
-        }
-
-        const float u = ((b.z - c.z) * (sampleX - c.x) + (c.x - b.x) * (sampleZ - c.z)) / det;
-        const float v = ((c.z - a.z) * (sampleX - c.x) + (a.x - c.x) * (sampleZ - c.z)) / det;
-        const float w = 1.0f - u - v;
-        constexpr float baryEps = 1e-4f;
-        if (u < -baryEps || v < -baryEps || w < -baryEps)
-        {
-            return false;
-        }
-
-        sampleYOut = u * a.y + v * b.y + w * c.y;
-        return std::isfinite(sampleYOut);
-    }
-
-    inline float Cross2D(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c)
-    {
-        return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    }
-
-    bool PointInsideTriangleStrictXZ(
-        const glm::vec3& point,
-        const glm::vec3& a,
-        const glm::vec3& b,
-        const glm::vec3& c,
-        float eps)
-    {
-        const glm::vec2 p(point.x, point.z);
-        const glm::vec2 v0(a.x, a.z);
-        const glm::vec2 v1(b.x, b.z);
-        const glm::vec2 v2(c.x, c.z);
-
-        const float area = Cross2D(v0, v1, v2);
-        if (std::fabs(area) <= eps)
-        {
-            return false;
-        }
-
-        const float invArea = 1.0f / area;
-        const float w0 = Cross2D(v1, v2, p) * invArea;
-        const float w1 = Cross2D(v2, v0, p) * invArea;
-        const float w2 = 1.0f - w0 - w1;
-        return w0 > eps && w1 > eps && w2 > eps;
-    }
-
-    bool SegmentsIntersectStrictXZ(
-        const glm::vec3& a0,
-        const glm::vec3& a1,
-        const glm::vec3& b0,
-        const glm::vec3& b1,
-        float eps)
-    {
-        const glm::vec2 p0(a0.x, a0.z);
-        const glm::vec2 p1(a1.x, a1.z);
-        const glm::vec2 q0(b0.x, b0.z);
-        const glm::vec2 q1(b1.x, b1.z);
-
-        const float d0 = Cross2D(p0, p1, q0);
-        const float d1 = Cross2D(p0, p1, q1);
-        const float d2 = Cross2D(q0, q1, p0);
-        const float d3 = Cross2D(q0, q1, p1);
-
-        const bool straddleA = (d0 > eps && d1 < -eps) || (d0 < -eps && d1 > eps);
-        const bool straddleB = (d2 > eps && d3 < -eps) || (d2 < -eps && d3 > eps);
-        return straddleA && straddleB;
-    }
-
-    bool TrianglesOverlapInXZStrict(
-        const glm::vec3& a0,
-        const glm::vec3& a1,
-        const glm::vec3& a2,
-        const glm::vec3& b0,
-        const glm::vec3& b1,
-        const glm::vec3& b2,
-        float eps)
-    {
-        if (PointInsideTriangleStrictXZ(a0, b0, b1, b2, eps) ||
-            PointInsideTriangleStrictXZ(a1, b0, b1, b2, eps) ||
-            PointInsideTriangleStrictXZ(a2, b0, b1, b2, eps) ||
-            PointInsideTriangleStrictXZ(b0, a0, a1, a2, eps) ||
-            PointInsideTriangleStrictXZ(b1, a0, a1, a2, eps) ||
-            PointInsideTriangleStrictXZ(b2, a0, a1, a2, eps))
-        {
-            return true;
-        }
-
-        const glm::vec3 triA[3] = { a0, a1, a2 };
-        const glm::vec3 triB[3] = { b0, b1, b2 };
-        for (int ea = 0; ea < 3; ++ea)
-        {
-            const glm::vec3& aStart = triA[ea];
-            const glm::vec3& aEnd = triA[(ea + 1) % 3];
-            for (int eb = 0; eb < 3; ++eb)
-            {
-                const glm::vec3& bStart = triB[eb];
-                const glm::vec3& bEnd = triB[(eb + 1) % 3];
-                if (SegmentsIntersectStrictXZ(aStart, aEnd, bStart, bEnd, eps))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    uint32_t CountSharedVertices(const WorkingTriangle& a, const WorkingTriangle& b)
-    {
-        uint32_t shared = 0;
-        for (int i = 0; i < 3; ++i)
-        {
-            for (int j = 0; j < 3; ++j)
-            {
-                if (a.mVertices[i] == b.mVertices[j])
-                {
-                    ++shared;
-                }
-            }
-        }
-
-        return shared;
-    }
-
-    uint32_t CountSharedVertices(
-        uint32_t a0,
-        uint32_t a1,
-        uint32_t a2,
-        uint32_t b0,
-        uint32_t b1,
-        uint32_t b2)
-    {
-        const uint32_t triA[3] = { a0, a1, a2 };
-        const uint32_t triB[3] = { b0, b1, b2 };
-
-        uint32_t shared = 0;
-        for (uint32_t va : triA)
-        {
-            for (uint32_t vb : triB)
-            {
-                if (va == vb)
-                {
-                    ++shared;
-                }
-            }
-        }
-
-        return shared;
-    }
-
-    void RemoveCoveredLowerSurfaces(
+    void RemoveDegenerateAndDuplicateTriangles(
         const std::vector<glm::vec3>& vertices,
-        float cellSize,
-        float cellHeight,
-        float maxOverheadDistance,
-        std::vector<WorkingTriangle>& trianglesInOut)
+        std::vector<uint32_t>& indicesInOut)
     {
-        if (trianglesInOut.size() < 2 || vertices.empty())
-        {
-            return;
-        }
-
-        struct TriInfo
-        {
-            glm::vec3 mV0 = glm::vec3(0.0f);
-            glm::vec3 mV1 = glm::vec3(0.0f);
-            glm::vec3 mV2 = glm::vec3(0.0f);
-            float mMinX = 0.0f;
-            float mMaxX = 0.0f;
-            float mMinZ = 0.0f;
-            float mMaxZ = 0.0f;
-            bool mValid = false;
-        };
-
-        const float bucketSize = std::max(cellSize * 3.0f, 0.5f);
-        const float invBucket = 1.0f / bucketSize;
-        const float heightEps = std::max(cellHeight * 0.5f, 0.02f);
-        const float overheadLimit = std::max(maxOverheadDistance, heightEps * 2.0f);
-        const float boundsEps = std::max(cellSize * 0.2f, 0.02f);
-
-        std::vector<TriInfo> triInfos(trianglesInOut.size());
-        std::unordered_map<Bucket2DKey, std::vector<uint32_t>, Bucket2DKeyHash> buckets;
-        buckets.reserve(trianglesInOut.size() * 2);
-
-        for (uint32_t triIndex = 0; triIndex < trianglesInOut.size(); ++triIndex)
-        {
-            const WorkingTriangle& tri = trianglesInOut[triIndex];
-            if (tri.mVertices[0] >= vertices.size() || tri.mVertices[1] >= vertices.size() || tri.mVertices[2] >= vertices.size())
-            {
-                continue;
-            }
-
-            TriInfo& info = triInfos[triIndex];
-            info.mV0 = vertices[tri.mVertices[0]];
-            info.mV1 = vertices[tri.mVertices[1]];
-            info.mV2 = vertices[tri.mVertices[2]];
-            if (!IsFiniteVec3(info.mV0) || !IsFiniteVec3(info.mV1) || !IsFiniteVec3(info.mV2))
-            {
-                continue;
-            }
-
-            info.mMinX = std::min({ info.mV0.x, info.mV1.x, info.mV2.x });
-            info.mMaxX = std::max({ info.mV0.x, info.mV1.x, info.mV2.x });
-            info.mMinZ = std::min({ info.mV0.z, info.mV1.z, info.mV2.z });
-            info.mMaxZ = std::max({ info.mV0.z, info.mV1.z, info.mV2.z });
-
-            const int32_t minBX = static_cast<int32_t>(std::floor(info.mMinX * invBucket));
-            const int32_t maxBX = static_cast<int32_t>(std::floor(info.mMaxX * invBucket));
-            const int32_t minBZ = static_cast<int32_t>(std::floor(info.mMinZ * invBucket));
-            const int32_t maxBZ = static_cast<int32_t>(std::floor(info.mMaxZ * invBucket));
-
-            for (int32_t bz = minBZ; bz <= maxBZ; ++bz)
-            {
-                for (int32_t bx = minBX; bx <= maxBX; ++bx)
-                {
-                    buckets[Bucket2DKey{ bx, bz }].push_back(triIndex);
-                }
-            }
-
-            info.mValid = true;
-        }
-
-        std::vector<uint8_t> removeTriangle(trianglesInOut.size(), 0);
-        for (uint32_t triIndex = 0; triIndex < trianglesInOut.size(); ++triIndex)
-        {
-            if (!triInfos[triIndex].mValid)
-            {
-                continue;
-            }
-
-            const TriInfo& info = triInfos[triIndex];
-            const glm::vec3 samplePoints[7] = {
-                (info.mV0 + info.mV1 + info.mV2) / 3.0f,
-                (info.mV0 + info.mV1) * 0.5f,
-                (info.mV1 + info.mV2) * 0.5f,
-                (info.mV2 + info.mV0) * 0.5f,
-                info.mV0 * 0.80f + info.mV1 * 0.10f + info.mV2 * 0.10f,
-                info.mV1 * 0.80f + info.mV2 * 0.10f + info.mV0 * 0.10f,
-                info.mV2 * 0.80f + info.mV0 * 0.10f + info.mV1 * 0.10f
-            };
-
-            int coveredSamples = 0;
-            for (const glm::vec3& sample : samplePoints)
-            {
-                const int32_t sampleBX = static_cast<int32_t>(std::floor(sample.x * invBucket));
-                const int32_t sampleBZ = static_cast<int32_t>(std::floor(sample.z * invBucket));
-
-                bool sampleCovered = false;
-                for (int32_t dz = -1; dz <= 1 && !sampleCovered; ++dz)
-                {
-                    for (int32_t dx = -1; dx <= 1 && !sampleCovered; ++dx)
-                    {
-                        const Bucket2DKey key{ sampleBX + dx, sampleBZ + dz };
-                        auto bucketIter = buckets.find(key);
-                        if (bucketIter == buckets.end())
-                        {
-                            continue;
-                        }
-
-                        for (uint32_t candidateTri : bucketIter->second)
-                        {
-                            if (candidateTri == triIndex || !triInfos[candidateTri].mValid)
-                            {
-                                continue;
-                            }
-
-                            const TriInfo& candidate = triInfos[candidateTri];
-                            if (sample.x < candidate.mMinX - boundsEps || sample.x > candidate.mMaxX + boundsEps ||
-                                sample.z < candidate.mMinZ - boundsEps || sample.z > candidate.mMaxZ + boundsEps)
-                            {
-                                continue;
-                            }
-
-                            float candidateY = 0.0f;
-                            if (!SampleTriangleHeightAtXZ(candidate.mV0, candidate.mV1, candidate.mV2, sample.x, sample.z, candidateY))
-                            {
-                                continue;
-                            }
-
-                            const float deltaY = candidateY - sample.y;
-                            if (deltaY > heightEps && deltaY < overheadLimit + heightEps)
-                            {
-                                sampleCovered = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if (sampleCovered)
-                {
-                    coveredSamples++;
-                }
-            }
-
-            if (coveredSamples == static_cast<int>(std::size(samplePoints)))
-            {
-                removeTriangle[triIndex] = 1;
-            }
-        }
-
-        bool anyRemoved = false;
-        for (uint8_t removed : removeTriangle)
-        {
-            anyRemoved |= (removed != 0);
-        }
-
-        if (!anyRemoved)
-        {
-            return;
-        }
-
-        std::vector<WorkingTriangle> filtered;
-        filtered.reserve(trianglesInOut.size());
-        for (uint32_t triIndex = 0; triIndex < trianglesInOut.size(); ++triIndex)
-        {
-            if (!removeTriangle[triIndex])
-            {
-                filtered.push_back(trianglesInOut[triIndex]);
-            }
-        }
-
-        trianglesInOut.swap(filtered);
-    }
-
-    void RemoveOverlappingWalkableSurfaces(
-        const std::vector<glm::vec3>& vertices,
-        float cellSize,
-        float cellHeight,
-        std::vector<WorkingTriangle>& trianglesInOut)
-    {
-        if (trianglesInOut.size() < 2 || vertices.empty())
-        {
-            return;
-        }
-
-        struct TriInfo
-        {
-            glm::vec3 mV0 = glm::vec3(0.0f);
-            glm::vec3 mV1 = glm::vec3(0.0f);
-            glm::vec3 mV2 = glm::vec3(0.0f);
-            float mMinX = 0.0f;
-            float mMaxX = 0.0f;
-            float mMinZ = 0.0f;
-            float mMaxZ = 0.0f;
-            float mCentroidY = 0.0f;
-            float mArea = 0.0f;
-            bool mValid = false;
-        };
-
-        const float bucketSize = std::max(cellSize * 3.0f, 0.5f);
-        const float invBucket = 1.0f / bucketSize;
-        const float overlapEps = std::max(cellSize * 0.04f, 1e-4f);
-        const float heightEps = std::max(cellHeight * 0.8f, 0.04f);
-
-        std::vector<TriInfo> infos(trianglesInOut.size());
-        std::unordered_map<Bucket2DKey, std::vector<uint32_t>, Bucket2DKeyHash> buckets;
-        buckets.reserve(trianglesInOut.size() * 2);
-
-        for (uint32_t triIndex = 0; triIndex < trianglesInOut.size(); ++triIndex)
-        {
-            const WorkingTriangle& tri = trianglesInOut[triIndex];
-            if (tri.mVertices[0] >= vertices.size() || tri.mVertices[1] >= vertices.size() || tri.mVertices[2] >= vertices.size())
-            {
-                continue;
-            }
-
-            TriInfo& info = infos[triIndex];
-            info.mV0 = vertices[tri.mVertices[0]];
-            info.mV1 = vertices[tri.mVertices[1]];
-            info.mV2 = vertices[tri.mVertices[2]];
-            if (!IsFiniteVec3(info.mV0) || !IsFiniteVec3(info.mV1) || !IsFiniteVec3(info.mV2))
-            {
-                continue;
-            }
-
-            const glm::vec3 cross = glm::cross(info.mV1 - info.mV0, info.mV2 - info.mV0);
-            const float crossLen = glm::length(cross);
-            if (crossLen <= 1e-8f)
-            {
-                continue;
-            }
-
-            info.mArea = crossLen * 0.5f;
-            info.mCentroidY = (info.mV0.y + info.mV1.y + info.mV2.y) / 3.0f;
-            info.mMinX = std::min({ info.mV0.x, info.mV1.x, info.mV2.x });
-            info.mMaxX = std::max({ info.mV0.x, info.mV1.x, info.mV2.x });
-            info.mMinZ = std::min({ info.mV0.z, info.mV1.z, info.mV2.z });
-            info.mMaxZ = std::max({ info.mV0.z, info.mV1.z, info.mV2.z });
-
-            const int32_t minBX = static_cast<int32_t>(std::floor(info.mMinX * invBucket));
-            const int32_t maxBX = static_cast<int32_t>(std::floor(info.mMaxX * invBucket));
-            const int32_t minBZ = static_cast<int32_t>(std::floor(info.mMinZ * invBucket));
-            const int32_t maxBZ = static_cast<int32_t>(std::floor(info.mMaxZ * invBucket));
-
-            for (int32_t bz = minBZ; bz <= maxBZ; ++bz)
-            {
-                for (int32_t bx = minBX; bx <= maxBX; ++bx)
-                {
-                    buckets[Bucket2DKey{ bx, bz }].push_back(triIndex);
-                }
-            }
-
-            info.mValid = true;
-        }
-
-        std::vector<uint8_t> removeTriangle(trianglesInOut.size(), 0);
-        std::vector<uint32_t> seenStamp(trianglesInOut.size(), 0);
-        uint32_t stamp = 1;
-        std::vector<uint32_t> candidates;
-        candidates.reserve(256);
-
-        for (uint32_t triIndex = 0; triIndex < trianglesInOut.size(); ++triIndex)
-        {
-            if (!infos[triIndex].mValid || removeTriangle[triIndex])
-            {
-                continue;
-            }
-
-            if (++stamp == 0)
-            {
-                stamp = 1;
-                std::fill(seenStamp.begin(), seenStamp.end(), 0);
-            }
-
-            const TriInfo& triInfo = infos[triIndex];
-            const int32_t minBX = static_cast<int32_t>(std::floor(triInfo.mMinX * invBucket));
-            const int32_t maxBX = static_cast<int32_t>(std::floor(triInfo.mMaxX * invBucket));
-            const int32_t minBZ = static_cast<int32_t>(std::floor(triInfo.mMinZ * invBucket));
-            const int32_t maxBZ = static_cast<int32_t>(std::floor(triInfo.mMaxZ * invBucket));
-
-            candidates.clear();
-            for (int32_t bz = minBZ; bz <= maxBZ; ++bz)
-            {
-                for (int32_t bx = minBX; bx <= maxBX; ++bx)
-                {
-                    auto bucketIter = buckets.find(Bucket2DKey{ bx, bz });
-                    if (bucketIter == buckets.end())
-                    {
-                        continue;
-                    }
-
-                    for (uint32_t candidateIndex : bucketIter->second)
-                    {
-                        if (candidateIndex <= triIndex || !infos[candidateIndex].mValid || removeTriangle[candidateIndex])
-                        {
-                            continue;
-                        }
-
-                        if (seenStamp[candidateIndex] == stamp)
-                        {
-                            continue;
-                        }
-
-                        seenStamp[candidateIndex] = stamp;
-                        candidates.push_back(candidateIndex);
-                    }
-                }
-            }
-
-            for (uint32_t candidateIndex : candidates)
-            {
-                if (removeTriangle[triIndex] || removeTriangle[candidateIndex])
-                {
-                    continue;
-                }
-
-                if (CountSharedVertices(trianglesInOut[triIndex], trianglesInOut[candidateIndex]) >= 2)
-                {
-                    continue;
-                }
-
-                const TriInfo& candidateInfo = infos[candidateIndex];
-                if (triInfo.mMaxX < candidateInfo.mMinX - overlapEps || triInfo.mMinX > candidateInfo.mMaxX + overlapEps ||
-                    triInfo.mMaxZ < candidateInfo.mMinZ - overlapEps || triInfo.mMinZ > candidateInfo.mMaxZ + overlapEps)
-                {
-                    continue;
-                }
-
-                if (!TrianglesOverlapInXZStrict(
-                        triInfo.mV0,
-                        triInfo.mV1,
-                        triInfo.mV2,
-                        candidateInfo.mV0,
-                        candidateInfo.mV1,
-                        candidateInfo.mV2,
-                        overlapEps))
-                {
-                    continue;
-                }
-
-                if (std::fabs(triInfo.mCentroidY - candidateInfo.mCentroidY) > heightEps)
-                {
-                    continue;
-                }
-
-                const bool firstIsSmaller = triInfo.mArea < candidateInfo.mArea;
-                const TriInfo& smaller = firstIsSmaller ? triInfo : candidateInfo;
-                const TriInfo& larger = firstIsSmaller ? candidateInfo : triInfo;
-
-                const glm::vec3 samplePoints[7] = {
-                    (smaller.mV0 + smaller.mV1 + smaller.mV2) / 3.0f,
-                    (smaller.mV0 + smaller.mV1) * 0.5f,
-                    (smaller.mV1 + smaller.mV2) * 0.5f,
-                    (smaller.mV2 + smaller.mV0) * 0.5f,
-                    smaller.mV0 * 0.80f + smaller.mV1 * 0.10f + smaller.mV2 * 0.10f,
-                    smaller.mV1 * 0.80f + smaller.mV2 * 0.10f + smaller.mV0 * 0.10f,
-                    smaller.mV2 * 0.80f + smaller.mV0 * 0.10f + smaller.mV1 * 0.10f
-                };
-
-                int coveredSamples = 0;
-                for (const glm::vec3& sample : samplePoints)
-                {
-                    float largerY = 0.0f;
-                    if (!SampleTriangleHeightAtXZ(larger.mV0, larger.mV1, larger.mV2, sample.x, sample.z, largerY))
-                    {
-                        continue;
-                    }
-
-                    if (std::fabs(largerY - sample.y) <= heightEps)
-                    {
-                        coveredSamples++;
-                    }
-                }
-
-                if (coveredSamples == static_cast<int>(std::size(samplePoints)))
-                {
-                    if (firstIsSmaller)
-                    {
-                        removeTriangle[triIndex] = 1;
-                    }
-                    else
-                    {
-                        removeTriangle[candidateIndex] = 1;
-                    }
-                }
-            }
-        }
-
-        bool anyRemoved = false;
-        for (uint8_t removed : removeTriangle)
-        {
-            anyRemoved |= (removed != 0);
-        }
-
-        if (!anyRemoved)
-        {
-            return;
-        }
-
-        std::vector<WorkingTriangle> filtered;
-        filtered.reserve(trianglesInOut.size());
-        for (uint32_t triIndex = 0; triIndex < trianglesInOut.size(); ++triIndex)
-        {
-            if (!removeTriangle[triIndex])
-            {
-                filtered.push_back(trianglesInOut[triIndex]);
-            }
-        }
-
-        trianglesInOut.swap(filtered);
-    }
-
-    void RebuildWorkingTrianglesFromIndexBuffer(
-        const std::vector<uint32_t>& indices,
-        const std::vector<glm::vec3>& vertices,
-        float walkableCos,
-        float minTriangleArea,
-        std::vector<WorkingTriangle>& trianglesOut)
-    {
-        trianglesOut.clear();
-        if (indices.size() < 3 || vertices.empty())
-        {
-            return;
-        }
-
-        trianglesOut.reserve(indices.size() / 3);
-        std::unordered_set<TriangleKey, TriangleKeyHash> uniqueTriangles;
-        uniqueTriangles.reserve(indices.size() / 3);
-
-        for (size_t i = 0; i + 2 < indices.size(); i += 3)
-        {
-            uint32_t a = indices[i + 0];
-            uint32_t b = indices[i + 1];
-            uint32_t c = indices[i + 2];
-
-            if (a >= vertices.size() || b >= vertices.size() || c >= vertices.size())
-            {
-                continue;
-            }
-
-            if (a == b || b == c || c == a)
-            {
-                continue;
-            }
-
-            const glm::vec3& va = vertices[a];
-            const glm::vec3& vb = vertices[b];
-            const glm::vec3& vc = vertices[c];
-
-            glm::vec3 cross = glm::cross(vb - va, vc - va);
-            const float crossLength = glm::length(cross);
-            if (crossLength <= 1e-8f)
-            {
-                continue;
-            }
-
-            const float area = crossLength * 0.5f;
-            if (area <= minTriangleArea)
-            {
-                continue;
-            }
-
-            glm::vec3 normal = cross / crossLength;
-            if (std::fabs(normal.y) < walkableCos)
-            {
-                continue;
-            }
-
-            if (cross.y < 0.0f)
-            {
-                std::swap(b, c);
-                normal = -normal;
-            }
-            if (normal.y < 0.0f)
-            {
-                normal = -normal;
-            }
-
-            const TriangleKey key = MakeTriangleKey(a, b, c);
-            if (!uniqueTriangles.insert(key).second)
-            {
-                continue;
-            }
-
-            WorkingTriangle triangle;
-            triangle.mVertices[0] = a;
-            triangle.mVertices[1] = b;
-            triangle.mVertices[2] = c;
-            triangle.mNormal = normal;
-            triangle.mArea = area;
-            trianglesOut.push_back(triangle);
-        }
-    }
-
-    void NormalizeInputTriangleWinding(
-        const float* inputVertices,
-        int inputVertexCount,
-        const int* inputIndices,
-        int inputIndexCount,
-        std::vector<int32_t>& woundIndicesOut)
-    {
-        woundIndicesOut.clear();
-        if (inputVertices == nullptr || inputIndices == nullptr || inputVertexCount <= 0 || inputIndexCount < 3)
-        {
-            return;
-        }
-
-        woundIndicesOut.reserve(static_cast<size_t>(inputIndexCount - (inputIndexCount % 3)));
-        for (int32_t tri = 0; tri + 2 < inputIndexCount; tri += 3)
-        {
-            int32_t ia = inputIndices[tri + 0];
-            int32_t ib = inputIndices[tri + 1];
-            int32_t ic = inputIndices[tri + 2];
-
-            if (ia >= 0 && ib >= 0 && ic >= 0 &&
-                ia < inputVertexCount && ib < inputVertexCount && ic < inputVertexCount)
-            {
-                const glm::vec3 va(
-                    inputVertices[ia * 3 + 0],
-                    inputVertices[ia * 3 + 1],
-                    inputVertices[ia * 3 + 2]);
-                const glm::vec3 vb(
-                    inputVertices[ib * 3 + 0],
-                    inputVertices[ib * 3 + 1],
-                    inputVertices[ib * 3 + 2]);
-                const glm::vec3 vc(
-                    inputVertices[ic * 3 + 0],
-                    inputVertices[ic * 3 + 1],
-                    inputVertices[ic * 3 + 2]);
-
-                if (IsFiniteVec3(va) && IsFiniteVec3(vb) && IsFiniteVec3(vc))
-                {
-                    const glm::vec3 cross = glm::cross(vb - va, vc - va);
-                    if (cross.y < 0.0f)
-                    {
-                        std::swap(ib, ic);
-                    }
-                }
-            }
-
-            woundIndicesOut.push_back(ia);
-            woundIndicesOut.push_back(ib);
-            woundIndicesOut.push_back(ic);
-        }
-    }
-
-    float TriangleMinAngleRadians(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
-    {
-        auto AngleAt = [](const glm::vec3& p, const glm::vec3& p0, const glm::vec3& p1)
-            {
-                const glm::vec3 v0 = p0 - p;
-                const glm::vec3 v1 = p1 - p;
-                const float l0 = glm::length(v0);
-                const float l1 = glm::length(v1);
-                if (l0 <= 1e-8f || l1 <= 1e-8f)
-                {
-                    return 0.0f;
-                }
-
-                const float cosine = std::clamp(glm::dot(v0 / l0, v1 / l1), -1.0f, 1.0f);
-                return std::acos(cosine);
-            };
-
-        const float a0 = AngleAt(a, b, c);
-        const float a1 = AngleAt(b, c, a);
-        const float a2 = AngleAt(c, a, b);
-        return std::min(a0, std::min(a1, a2));
-    }
-
-    void RemoveDegenerateAndDuplicateTriangleIndices(
-        std::vector<uint32_t>& indicesInOut,
-        const std::vector<glm::vec3>& vertices,
-        float minTriangleArea)
-    {
-        if (indicesInOut.size() < 3)
+        if (indicesInOut.size() < 3 || vertices.empty())
         {
             indicesInOut.clear();
             return;
@@ -967,10 +257,9 @@ namespace
 
         for (size_t i = 0; i + 2 < indicesInOut.size(); i += 3)
         {
-            uint32_t a = indicesInOut[i + 0];
-            uint32_t b = indicesInOut[i + 1];
-            uint32_t c = indicesInOut[i + 2];
-
+            const uint32_t a = indicesInOut[i + 0];
+            const uint32_t b = indicesInOut[i + 1];
+            const uint32_t c = indicesInOut[i + 2];
             if (a >= vertices.size() || b >= vertices.size() || c >= vertices.size())
             {
                 continue;
@@ -985,15 +274,9 @@ namespace
             const glm::vec3& vb = vertices[b];
             const glm::vec3& vc = vertices[c];
             const glm::vec3 cross = glm::cross(vb - va, vc - va);
-            const float area = glm::length(cross) * 0.5f;
-            if (area <= minTriangleArea)
+            if (glm::length(cross) <= 1e-9f)
             {
                 continue;
-            }
-
-            if (cross.y < 0.0f)
-            {
-                std::swap(b, c);
             }
 
             const TriangleKey key = MakeTriangleKey(a, b, c);
@@ -1010,866 +293,1955 @@ namespace
         indicesInOut.swap(filtered);
     }
 
-    void TrySimplifyWorkingTriangles(
-        std::vector<glm::vec3>& vertices,
-        const SimplificationSettings& settings,
-        float walkableCos,
-        float minTriangleArea,
-        bool clampToForcedBounds,
-        float forcedMinX,
-        float forcedMaxX,
-        float forcedMinZ,
-        float forcedMaxZ,
-        std::vector<WorkingTriangle>& trianglesInOut)
+    bool WeldRawMeshExact(
+        std::vector<glm::vec3>& verticesInOut,
+        std::vector<uint32_t>& indicesInOut)
     {
-        if (!settings.mEnabled)
+        if (verticesInOut.empty() || indicesInOut.empty())
         {
-            return;
+            return false;
         }
 
-        if (trianglesInOut.size() < 16 || vertices.size() < 8)
+        std::vector<uint32_t> remap(verticesInOut.size());
+        const size_t uniqueVertexCount = meshopt_generateVertexRemap(
+            remap.data(),
+            indicesInOut.data(),
+            indicesInOut.size(),
+            verticesInOut.data(),
+            verticesInOut.size(),
+            sizeof(glm::vec3));
+
+        if (uniqueVertexCount == 0)
         {
-            return;
+            return false;
         }
 
-        const float ratio = std::clamp(settings.mTargetRatio, 0.003f, 1.0f);
-        if (ratio >= 0.999f)
+        std::vector<glm::vec3> weldedVertices(uniqueVertexCount);
+        std::vector<uint32_t> weldedIndices(indicesInOut.size());
+
+        meshopt_remapVertexBuffer(
+            weldedVertices.data(),
+            verticesInOut.data(),
+            verticesInOut.size(),
+            sizeof(glm::vec3),
+            remap.data());
+        meshopt_remapIndexBuffer(
+            weldedIndices.data(),
+            indicesInOut.data(),
+            indicesInOut.size(),
+            remap.data());
+
+        verticesInOut.swap(weldedVertices);
+        indicesInOut.swap(weldedIndices);
+        RemoveDegenerateAndDuplicateTriangles(verticesInOut, indicesInOut);
+        return !verticesInOut.empty() && !indicesInOut.empty();
+    }
+
+    bool SimplifyRawMeshByRatioWithOptions(
+        std::vector<glm::vec3>& verticesInOut,
+        std::vector<uint32_t>& indicesInOut,
+        float targetRatio,
+        float targetError,
+        unsigned int options)
+    {
+        if (!WeldRawMeshExact(verticesInOut, indicesInOut))
         {
-            return;
+            return false;
         }
 
-        const float aggressiveness = std::clamp(settings.mMaxError, 0.02f, 1.0f);
+        targetRatio = std::clamp(targetRatio, 0.003f, 1.0f);
+        if (targetRatio >= 0.999f || indicesInOut.size() < 6)
+        {
+            return true;
+        }
 
-        auto ClampVertexToBounds = [&](glm::vec3& vertex)
+        const size_t indexCount = indicesInOut.size();
+        size_t targetIndexCount = static_cast<size_t>(std::floor(static_cast<double>(indexCount) * static_cast<double>(targetRatio)));
+        targetIndexCount = std::max<size_t>(6, (targetIndexCount / 3) * 3);
+        targetIndexCount = std::min(targetIndexCount, indexCount);
+
+        if (targetIndexCount >= indexCount)
+        {
+            return true;
+        }
+
+        std::vector<uint32_t> simplified(indexCount);
+        float resultError = 0.0f;
+        size_t simplifiedCount = meshopt_simplify(
+            simplified.data(),
+            indicesInOut.data(),
+            indexCount,
+            &verticesInOut[0].x,
+            verticesInOut.size(),
+            sizeof(glm::vec3),
+            targetIndexCount,
+            std::max(1e-4f, targetError),
+            options,
+            &resultError);
+
+        if (simplifiedCount < 6 || simplifiedCount >= indexCount)
+        {
+            return true;
+        }
+
+        simplifiedCount = (simplifiedCount / 3) * 3;
+        simplified.resize(simplifiedCount);
+        indicesInOut.swap(simplified);
+
+        std::vector<glm::vec3> fetchedVertices(verticesInOut.size());
+        const size_t fetchedVertexCount = meshopt_optimizeVertexFetch(
+            fetchedVertices.data(),
+            indicesInOut.data(),
+            indicesInOut.size(),
+            verticesInOut.data(),
+            verticesInOut.size(),
+            sizeof(glm::vec3));
+
+        if (fetchedVertexCount == 0)
+        {
+            return false;
+        }
+
+        fetchedVertices.resize(fetchedVertexCount);
+        verticesInOut.swap(fetchedVertices);
+
+        return WeldRawMeshExact(verticesInOut, indicesInOut);
+    }
+
+    [[maybe_unused]] bool SimplifyRawMeshByRatioSloppy(
+        std::vector<glm::vec3>& verticesInOut,
+        std::vector<uint32_t>& indicesInOut,
+        float targetRatio,
+        float targetError)
+    {
+        if (!WeldRawMeshExact(verticesInOut, indicesInOut))
+        {
+            return false;
+        }
+
+        targetRatio = std::clamp(targetRatio, 0.003f, 1.0f);
+        if (targetRatio >= 0.999f || indicesInOut.size() < 6)
+        {
+            return true;
+        }
+
+        const size_t indexCount = indicesInOut.size();
+        size_t targetIndexCount = static_cast<size_t>(std::floor(static_cast<double>(indexCount) * static_cast<double>(targetRatio)));
+        targetIndexCount = std::max<size_t>(6, (targetIndexCount / 3) * 3);
+        targetIndexCount = std::min(targetIndexCount, indexCount);
+
+        if (targetIndexCount >= indexCount)
+        {
+            return true;
+        }
+
+        std::vector<uint32_t> simplified(indexCount);
+        float resultError = 0.0f;
+        size_t simplifiedCount = meshopt_simplifySloppy(
+            simplified.data(),
+            indicesInOut.data(),
+            indexCount,
+            &verticesInOut[0].x,
+            verticesInOut.size(),
+            sizeof(glm::vec3),
+            targetIndexCount,
+            std::max(1e-4f, targetError),
+            &resultError);
+
+        if (simplifiedCount < 6 || simplifiedCount >= indexCount)
+        {
+            return true;
+        }
+
+        simplifiedCount = (simplifiedCount / 3) * 3;
+        simplified.resize(simplifiedCount);
+        indicesInOut.swap(simplified);
+
+        std::vector<glm::vec3> fetchedVertices(verticesInOut.size());
+        const size_t fetchedVertexCount = meshopt_optimizeVertexFetch(
+            fetchedVertices.data(),
+            indicesInOut.data(),
+            indicesInOut.size(),
+            verticesInOut.data(),
+            verticesInOut.size(),
+            sizeof(glm::vec3));
+
+        if (fetchedVertexCount == 0)
+        {
+            return false;
+        }
+
+        fetchedVertices.resize(fetchedVertexCount);
+        verticesInOut.swap(fetchedVertices);
+
+        return WeldRawMeshExact(verticesInOut, indicesInOut);
+    }
+
+    bool SimplifyRawMeshToPackedLimits(
+        std::vector<glm::vec3>& verticesInOut,
+        std::vector<uint32_t>& indicesInOut,
+        float baseError)
+    {
+        constexpr size_t maxPackedVertices = 0xFFFFu;
+        constexpr size_t maxPackedFaces = 0xFFFFu;
+
+        auto FitsPackedLimits = [&]()
             {
-                if (!clampToForcedBounds)
+                return verticesInOut.size() <= maxPackedVertices &&
+                    (indicesInOut.size() / 3) <= maxPackedFaces &&
+                    !verticesInOut.empty() &&
+                    !indicesInOut.empty();
+            };
+
+        if (!WeldRawMeshExact(verticesInOut, indicesInOut))
+        {
+            return false;
+        }
+
+        if (FitsPackedLimits())
+        {
+            return true;
+        }
+
+        float targetError = std::max(1e-4f, baseError);
+        std::vector<uint32_t> simplified(indicesInOut.size());
+
+        constexpr int maxPasses = 14;
+        for (int pass = 0; pass < maxPasses; ++pass)
+        {
+            const size_t indexCount = indicesInOut.size();
+            if (indexCount < 6 || verticesInOut.empty())
+            {
+                break;
+            }
+
+            const double faceScale = std::min(
+                1.0,
+                static_cast<double>(maxPackedFaces * 3ull) / std::max<size_t>(indexCount, 1));
+            const double vertexScale = std::min(
+                1.0,
+                static_cast<double>(maxPackedVertices) / std::max<size_t>(verticesInOut.size(), 1));
+            const double requestedScale = std::min(faceScale, vertexScale) * 0.88;
+            const double clampedScale = std::clamp(requestedScale, 0.05, 0.95);
+
+            size_t targetIndexCount = static_cast<size_t>(std::floor(static_cast<double>(indexCount) * clampedScale));
+            targetIndexCount = std::max<size_t>(6, (targetIndexCount / 3) * 3);
+            if (targetIndexCount >= indexCount)
+            {
+                targetIndexCount = std::max<size_t>(6, ((indexCount * 7) / 10 / 3) * 3);
+            }
+
+            float resultError = 0.0f;
+            size_t simplifiedCount = meshopt_simplify(
+                simplified.data(),
+                indicesInOut.data(),
+                indexCount,
+                &verticesInOut[0].x,
+                verticesInOut.size(),
+                sizeof(glm::vec3),
+                targetIndexCount,
+                targetError,
+                meshopt_SimplifyLockBorder,
+                &resultError);
+
+            if (simplifiedCount < 6 || simplifiedCount > indexCount || simplifiedCount == indexCount)
+            {
+                targetError = std::min(100.0f, targetError * 2.0f + 0.001f);
+                continue;
+            }
+
+            simplifiedCount = (simplifiedCount / 3) * 3;
+            simplified.resize(simplifiedCount);
+            indicesInOut.swap(simplified);
+            simplified.resize(indexCount);
+
+            std::vector<glm::vec3> fetchedVertices(verticesInOut.size());
+            const size_t fetchedVertexCount = meshopt_optimizeVertexFetch(
+                fetchedVertices.data(),
+                indicesInOut.data(),
+                indicesInOut.size(),
+                verticesInOut.data(),
+                verticesInOut.size(),
+                sizeof(glm::vec3));
+
+            if (fetchedVertexCount == 0)
+            {
+                return false;
+            }
+
+            fetchedVertices.resize(fetchedVertexCount);
+            verticesInOut.swap(fetchedVertices);
+
+            if (!WeldRawMeshExact(verticesInOut, indicesInOut))
+            {
+                return false;
+            }
+
+            if (FitsPackedLimits())
+            {
+                return true;
+            }
+
+            targetError = std::min(100.0f, std::max(targetError * 1.6f, resultError * 1.5f + 1e-4f));
+        }
+
+        return FitsPackedLimits();
+    }
+
+    void SnapVerticesToBounds(
+        std::vector<glm::vec3>& verticesInOut,
+        float minX,
+        float maxX,
+        float minZ,
+        float maxZ,
+        float tolerance)
+    {
+        if (verticesInOut.empty())
+        {
+            return;
+        }
+
+        const float tol = std::max(0.0f, tolerance);
+        for (glm::vec3& v : verticesInOut)
+        {
+            if (std::fabs(v.x - minX) <= tol)
+            {
+                v.x = minX;
+            }
+            else if (std::fabs(v.x - maxX) <= tol)
+            {
+                v.x = maxX;
+            }
+
+            if (std::fabs(v.z - minZ) <= tol)
+            {
+                v.z = minZ;
+            }
+            else if (std::fabs(v.z - maxZ) <= tol)
+            {
+                v.z = maxZ;
+            }
+        }
+    }
+
+    void SmoothRawMeshLaplacian(
+        std::vector<glm::vec3>& verticesInOut,
+        const std::vector<uint32_t>& indices,
+        int iterations,
+        float alpha,
+        const std::vector<uint8_t>* fixedMask)
+    {
+        if (verticesInOut.empty() || indices.size() < 3 || iterations <= 0)
+        {
+            return;
+        }
+
+        const float clampedAlpha = std::clamp(alpha, 0.0f, 1.0f);
+        if (clampedAlpha <= 0.0f)
+        {
+            return;
+        }
+
+        std::vector<std::vector<uint32_t>> neighbors(verticesInOut.size());
+        neighbors.reserve(verticesInOut.size());
+
+        for (size_t i = 0; i + 2 < indices.size(); i += 3)
+        {
+            const uint32_t a = indices[i + 0];
+            const uint32_t b = indices[i + 1];
+            const uint32_t c = indices[i + 2];
+            if (a >= verticesInOut.size() || b >= verticesInOut.size() || c >= verticesInOut.size())
+            {
+                continue;
+            }
+
+            neighbors[a].push_back(b);
+            neighbors[a].push_back(c);
+            neighbors[b].push_back(a);
+            neighbors[b].push_back(c);
+            neighbors[c].push_back(a);
+            neighbors[c].push_back(b);
+        }
+
+        for (auto& list : neighbors)
+        {
+            if (list.size() <= 1)
+            {
+                continue;
+            }
+            std::sort(list.begin(), list.end());
+            list.erase(std::unique(list.begin(), list.end()), list.end());
+        }
+
+        std::vector<glm::vec3> next(verticesInOut.size());
+        for (int iter = 0; iter < iterations; ++iter)
+        {
+            next = verticesInOut;
+            for (size_t i = 0; i < verticesInOut.size(); ++i)
+            {
+                if (fixedMask != nullptr && i < fixedMask->size() && (*fixedMask)[i])
+                {
+                    continue;
+                }
+
+                const auto& list = neighbors[i];
+                if (list.empty())
+                {
+                    continue;
+                }
+
+                glm::vec3 sum(0.0f);
+                for (uint32_t n : list)
+                {
+                    sum += verticesInOut[n];
+                }
+
+                const float invCount = 1.0f / static_cast<float>(list.size());
+                const glm::vec3 avg = sum * invCount;
+                next[i] = verticesInOut[i] + clampedAlpha * (avg - verticesInOut[i]);
+            }
+
+            verticesInOut.swap(next);
+        }
+    }
+
+    float TriangleAreaSquared(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c)
+    {
+        const glm::vec3 cross = glm::cross(b - a, c - a);
+        return 0.25f * glm::dot(cross, cross);
+    }
+
+    float MaxTriangleAreaSquared(const std::vector<glm::vec3>& vertices, const std::vector<uint32_t>& indices)
+    {
+        float maxAreaSq = 0.0f;
+        for (size_t i = 0; i + 2 < indices.size(); i += 3)
+        {
+            const uint32_t a = indices[i + 0];
+            const uint32_t b = indices[i + 1];
+            const uint32_t c = indices[i + 2];
+            if (a >= vertices.size() || b >= vertices.size() || c >= vertices.size())
+            {
+                continue;
+            }
+
+            const float areaSq = TriangleAreaSquared(vertices[a], vertices[b], vertices[c]);
+            if (areaSq > maxAreaSq)
+            {
+                maxAreaSq = areaSq;
+            }
+        }
+        return maxAreaSq;
+    }
+
+    bool CullSmallTrianglesAndBatches(
+        std::vector<glm::vec3>& verticesInOut,
+        std::vector<uint32_t>& indicesInOut,
+        float minTriangleArea,
+        float minBatchExtent,
+        float minX,
+        float maxX,
+        float minZ,
+        float maxZ,
+        float borderBandWorld)
+    {
+        if (verticesInOut.empty() || indicesInOut.size() < 3)
+        {
+            return false;
+        }
+
+        const float minAreaSq = std::max(0.0f, minTriangleArea * minTriangleArea);
+        const float minExtent = std::max(0.0f, minBatchExtent);
+        const float borderBand = std::max(0.0f, borderBandWorld);
+        auto IsNearBorder = [&](const glm::vec3& v) -> bool
+            {
+                return v.x <= minX + borderBand || v.x >= maxX - borderBand ||
+                    v.z <= minZ + borderBand || v.z >= maxZ - borderBand;
+            };
+
+        const size_t triCount = indicesInOut.size() / 3;
+        std::vector<uint8_t> keep(triCount, 1u);
+
+        if (minAreaSq > 0.0f)
+        {
+            for (size_t t = 0; t < triCount; ++t)
+            {
+                const uint32_t a = indicesInOut[t * 3 + 0];
+                const uint32_t b = indicesInOut[t * 3 + 1];
+                const uint32_t c = indicesInOut[t * 3 + 2];
+                if (a >= verticesInOut.size() || b >= verticesInOut.size() || c >= verticesInOut.size())
+                {
+                    keep[t] = 0u;
+                    continue;
+                }
+
+                const glm::vec3& va = verticesInOut[a];
+                const glm::vec3& vb = verticesInOut[b];
+                const glm::vec3& vc = verticesInOut[c];
+
+                if (IsNearBorder(va) || IsNearBorder(vb) || IsNearBorder(vc))
+                {
+                    continue;
+                }
+
+                if (TriangleAreaSquared(va, vb, vc) < minAreaSq)
+                {
+                    keep[t] = 0u;
+                }
+            }
+        }
+
+        std::vector<uint32_t> parent(triCount);
+        std::vector<uint32_t> rank(triCount, 0u);
+        for (size_t i = 0; i < triCount; ++i)
+        {
+            parent[i] = static_cast<uint32_t>(i);
+        }
+
+        auto Find = [&](uint32_t x)
+            {
+                uint32_t root = x;
+                while (parent[root] != root)
+                {
+                    root = parent[root];
+                }
+                while (parent[x] != x)
+                {
+                    const uint32_t next = parent[x];
+                    parent[x] = root;
+                    x = next;
+                }
+                return root;
+            };
+
+        auto Union = [&](uint32_t a, uint32_t b)
+            {
+                uint32_t ra = Find(a);
+                uint32_t rb = Find(b);
+                if (ra == rb)
+                {
+                    return;
+                }
+                if (rank[ra] < rank[rb])
+                {
+                    parent[ra] = rb;
+                }
+                else if (rank[ra] > rank[rb])
+                {
+                    parent[rb] = ra;
+                }
+                else
+                {
+                    parent[rb] = ra;
+                    ++rank[ra];
+                }
+            };
+
+        std::unordered_map<UndirectedEdgeKey, uint32_t, UndirectedEdgeKeyHash> edgeOwner;
+        edgeOwner.reserve(triCount * 2 + 1);
+
+        for (uint32_t t = 0; t < triCount; ++t)
+        {
+            if (!keep[t])
+            {
+                continue;
+            }
+
+            const uint32_t a = indicesInOut[t * 3 + 0];
+            const uint32_t b = indicesInOut[t * 3 + 1];
+            const uint32_t c = indicesInOut[t * 3 + 2];
+            const UndirectedEdgeKey edges[3] = {
+                MakeUndirectedEdgeKey(a, b),
+                MakeUndirectedEdgeKey(b, c),
+                MakeUndirectedEdgeKey(c, a)
+            };
+
+            for (const UndirectedEdgeKey& edge : edges)
+            {
+                auto [it, inserted] = edgeOwner.emplace(edge, t);
+                if (!inserted)
+                {
+                    Union(t, it->second);
+                }
+            }
+        }
+
+        struct Aabb
+        {
+            glm::vec3 mMin = glm::vec3(0.0f);
+            glm::vec3 mMax = glm::vec3(0.0f);
+            bool mValid = false;
+        };
+
+        std::vector<Aabb> aabbs(triCount);
+        for (uint32_t t = 0; t < triCount; ++t)
+        {
+            if (!keep[t])
+            {
+                continue;
+            }
+
+            const uint32_t a = indicesInOut[t * 3 + 0];
+            const uint32_t b = indicesInOut[t * 3 + 1];
+            const uint32_t c = indicesInOut[t * 3 + 2];
+            if (a >= verticesInOut.size() || b >= verticesInOut.size() || c >= verticesInOut.size())
+            {
+                continue;
+            }
+
+            const uint32_t root = Find(t);
+            Aabb& box = aabbs[root];
+            const glm::vec3& va = verticesInOut[a];
+            const glm::vec3& vb = verticesInOut[b];
+            const glm::vec3& vc = verticesInOut[c];
+            if (!box.mValid)
+            {
+                box.mMin = va;
+                box.mMax = va;
+                box.mValid = true;
+            }
+
+            auto expand = [&](const glm::vec3& v)
+                {
+                    box.mMin.x = std::min(box.mMin.x, v.x);
+                    box.mMin.y = std::min(box.mMin.y, v.y);
+                    box.mMin.z = std::min(box.mMin.z, v.z);
+                    box.mMax.x = std::max(box.mMax.x, v.x);
+                    box.mMax.y = std::max(box.mMax.y, v.y);
+                    box.mMax.z = std::max(box.mMax.z, v.z);
+                };
+
+            expand(vb);
+            expand(vc);
+        }
+
+        std::vector<uint8_t> keepComponent(triCount, 0u);
+        if (minExtent <= 0.0f)
+        {
+            for (size_t i = 0; i < triCount; ++i)
+            {
+                if (aabbs[i].mValid)
+                {
+                    keepComponent[i] = 1u;
+                }
+            }
+        }
+        else
+        {
+            for (size_t i = 0; i < triCount; ++i)
+            {
+                if (!aabbs[i].mValid)
+                {
+                    continue;
+                }
+
+                const float extentX = aabbs[i].mMax.x - aabbs[i].mMin.x;
+                const float extentZ = aabbs[i].mMax.z - aabbs[i].mMin.z;
+                if (extentX >= minExtent || extentZ >= minExtent)
+                {
+                    keepComponent[i] = 1u;
+                }
+            }
+        }
+
+        std::vector<uint32_t> filtered;
+        filtered.reserve(indicesInOut.size());
+
+        for (uint32_t t = 0; t < triCount; ++t)
+        {
+            if (!keep[t])
+            {
+                continue;
+            }
+
+            const uint32_t root = Find(t);
+            if (!keepComponent[root])
+            {
+                continue;
+            }
+
+            filtered.push_back(indicesInOut[t * 3 + 0]);
+            filtered.push_back(indicesInOut[t * 3 + 1]);
+            filtered.push_back(indicesInOut[t * 3 + 2]);
+        }
+
+        if (filtered.empty())
+        {
+            verticesInOut.clear();
+            indicesInOut.clear();
+            return false;
+        }
+
+        indicesInOut.swap(filtered);
+        WeldRawMeshExact(verticesInOut, indicesInOut);
+        return !verticesInOut.empty() && !indicesInOut.empty();
+    }
+
+    bool SimplifyInteriorRegion(
+        std::vector<glm::vec3>& verticesInOut,
+        std::vector<uint32_t>& indicesInOut,
+        float minX,
+        float maxX,
+        float minZ,
+        float maxZ,
+        float borderBandWorld,
+        float targetRatio,
+        float targetError,
+        float maxTriangleArea)
+    {
+        if (verticesInOut.empty() || indicesInOut.size() < 3)
+        {
+            return false;
+        }
+
+        const float clampedBand = std::max(0.0f, borderBandWorld);
+        auto IsNearBorder = [&](const glm::vec3& v) -> bool
+            {
+                return v.x <= minX + clampedBand || v.x >= maxX - clampedBand ||
+                    v.z <= minZ + clampedBand || v.z >= maxZ - clampedBand;
+            };
+
+        std::vector<uint32_t> borderIndices;
+        std::vector<uint32_t> interiorIndices;
+        borderIndices.reserve(indicesInOut.size());
+        interiorIndices.reserve(indicesInOut.size());
+
+        for (size_t i = 0; i + 2 < indicesInOut.size(); i += 3)
+        {
+            const uint32_t a = indicesInOut[i + 0];
+            const uint32_t b = indicesInOut[i + 1];
+            const uint32_t c = indicesInOut[i + 2];
+            if (a >= verticesInOut.size() || b >= verticesInOut.size() || c >= verticesInOut.size())
+            {
+                continue;
+            }
+
+            const bool nearBorder =
+                IsNearBorder(verticesInOut[a]) ||
+                IsNearBorder(verticesInOut[b]) ||
+                IsNearBorder(verticesInOut[c]);
+
+            if (nearBorder)
+            {
+                borderIndices.push_back(a);
+                borderIndices.push_back(b);
+                borderIndices.push_back(c);
+            }
+            else
+            {
+                interiorIndices.push_back(a);
+                interiorIndices.push_back(b);
+                interiorIndices.push_back(c);
+            }
+        }
+
+        if (interiorIndices.empty())
+        {
+            return true;
+        }
+
+        auto BuildSubmesh = [&](const std::vector<uint32_t>& srcIndices,
+                                std::vector<glm::vec3>& outVertices,
+                                std::vector<uint32_t>& outIndices)
+            {
+                outVertices.clear();
+                outIndices.clear();
+                if (srcIndices.empty())
                 {
                     return;
                 }
 
-                vertex.x = ClampToRange(vertex.x, forcedMinX, forcedMaxX);
-                vertex.z = ClampToRange(vertex.z, forcedMinZ, forcedMaxZ);
-            };
+                std::vector<uint32_t> remap(verticesInOut.size(), std::numeric_limits<uint32_t>::max());
+                outVertices.reserve(srcIndices.size());
+                outIndices.reserve(srcIndices.size());
 
-        std::vector<uint32_t> indices;
-        indices.reserve(trianglesInOut.size() * 3);
-        for (const WorkingTriangle& tri : trianglesInOut)
-        {
-            indices.push_back(tri.mVertices[0]);
-            indices.push_back(tri.mVertices[1]);
-            indices.push_back(tri.mVertices[2]);
-        }
-
-        for (glm::vec3& vertex : vertices)
-        {
-            ClampVertexToBounds(vertex);
-        }
-
-        RemoveDegenerateAndDuplicateTriangleIndices(indices, vertices, minTriangleArea);
-        if (indices.size() < 9)
-        {
-            return;
-        }
-
-        const size_t initialTriangleCount = indices.size() / 3;
-        const size_t targetTriangleCount = std::max<size_t>(
-            1,
-            static_cast<size_t>(std::floor(static_cast<float>(initialTriangleCount) * ratio)));
-
-        if (targetTriangleCount >= initialTriangleCount)
-        {
-            return;
-        }
-
-        struct EdgeCandidate
-        {
-            uint32_t a = 0;
-            uint32_t b = 0;
-            uint32_t usage = 0;
-            float lenSq = 0.0f;
-        };
-
-        struct CollapseCandidate
-        {
-            uint32_t a = 0;
-            uint32_t b = 0;
-            float cost = 0.0f;
-        };
-
-        auto BuildEdgeData = [&](const std::vector<uint32_t>& triIndices,
-                                 std::vector<int32_t>& valenceOut,
-                                 std::vector<uint8_t>& boundaryOut,
-                                 std::vector<EdgeCandidate>& edgesOut,
-                                 float& avgLenSqOut)
-            {
-                valenceOut.assign(vertices.size(), 0);
-                boundaryOut.assign(vertices.size(), 0);
-                edgesOut.clear();
-
-                std::unordered_map<UndirectedEdgeKey, uint32_t, UndirectedEdgeKeyHash> edgeUse;
-                edgeUse.reserve(triIndices.size());
-
-                for (size_t i = 0; i + 2 < triIndices.size(); i += 3)
+                for (uint32_t idx : srcIndices)
                 {
-                    const uint32_t tri[3] = { triIndices[i + 0], triIndices[i + 1], triIndices[i + 2] };
-                    for (int e = 0; e < 3; ++e)
-                    {
-                        const uint32_t v0 = tri[e];
-                        const uint32_t v1 = tri[(e + 1) % 3];
-                        if (v0 == v1 || v0 >= vertices.size() || v1 >= vertices.size())
-                        {
-                            continue;
-                        }
-
-                        edgeUse[MakeUndirectedEdgeKey(v0, v1)]++;
-                    }
-                }
-
-                edgesOut.reserve(edgeUse.size());
-                float lenSqSum = 0.0f;
-                for (const auto& [key, usage] : edgeUse)
-                {
-                    EdgeCandidate edge;
-                    edge.a = key.mMin;
-                    edge.b = key.mMax;
-                    edge.usage = usage;
-                    const glm::vec3 edgeDelta = vertices[edge.a] - vertices[edge.b];
-                    edge.lenSq = glm::dot(edgeDelta, edgeDelta);
-                    if (edge.lenSq <= 1e-12f)
+                    if (idx >= verticesInOut.size())
                     {
                         continue;
                     }
 
-                    lenSqSum += edge.lenSq;
-                    valenceOut[edge.a]++;
-                    valenceOut[edge.b]++;
-                    if (usage == 1)
+                    uint32_t& mapped = remap[idx];
+                    if (mapped == std::numeric_limits<uint32_t>::max())
                     {
-                        boundaryOut[edge.a] = 1;
-                        boundaryOut[edge.b] = 1;
+                        mapped = static_cast<uint32_t>(outVertices.size());
+                        outVertices.push_back(verticesInOut[idx]);
                     }
 
-                    edgesOut.push_back(edge);
+                    outIndices.push_back(mapped);
                 }
-
-                avgLenSqOut = edgesOut.empty() ? 0.0f : lenSqSum / static_cast<float>(edgesOut.size());
             };
 
-        std::vector<int32_t> valence;
-        std::vector<uint8_t> boundaryVertex;
-        std::vector<EdgeCandidate> edges;
-        std::vector<CollapseCandidate> candidates;
+        std::vector<glm::vec3> borderVertices;
+        std::vector<uint32_t> borderIndicesRemapped;
+        BuildSubmesh(borderIndices, borderVertices, borderIndicesRemapped);
 
-        const bool veryLargeMesh = initialTriangleCount > 120000;
-        const int maxCollapsePasses = veryLargeMesh ? 10 : 16;
-        const size_t maxCandidateCount = veryLargeMesh ? 220000 : 500000;
+        std::vector<glm::vec3> interiorVertices;
+        std::vector<uint32_t> interiorIndicesRemapped;
+        BuildSubmesh(interiorIndices, interiorVertices, interiorIndicesRemapped);
 
-        for (int pass = 0; pass < maxCollapsePasses && indices.size() / 3 > targetTriangleCount; ++pass)
+        if (!interiorVertices.empty() && interiorIndicesRemapped.size() >= 6)
         {
-            float avgLenSq = 0.0f;
-            BuildEdgeData(indices, valence, boundaryVertex, edges, avgLenSq);
-            if (edges.empty() || avgLenSq <= 1e-12f)
+            const float areaCap = std::max(0.0f, maxTriangleArea);
+            std::vector<glm::vec3> bestVertices = interiorVertices;
+            std::vector<uint32_t> bestIndices = interiorIndicesRemapped;
+            float ratio = std::clamp(targetRatio, 0.003f, 1.0f);
+            float error = std::max(1e-4f, targetError);
+            const float areaCapSq = (areaCap > 0.0f) ? (areaCap * areaCap) : 0.0f;
+
+            constexpr int maxAttempts = 4;
+            for (int attempt = 0; attempt < maxAttempts; ++attempt)
             {
-                break;
+                std::vector<glm::vec3> simplifiedVertices = interiorVertices;
+                std::vector<uint32_t> simplifiedIndices = interiorIndicesRemapped;
+                if (!SimplifyRawMeshByRatioWithOptions(
+                        simplifiedVertices,
+                        simplifiedIndices,
+                        ratio,
+                        error,
+                        meshopt_SimplifyLockBorder))
+                {
+                    break;
+                }
+
+                const float maxAreaSq = MaxTriangleAreaSquared(simplifiedVertices, simplifiedIndices);
+                bestVertices.swap(simplifiedVertices);
+                bestIndices.swap(simplifiedIndices);
+                if (areaCapSq <= 0.0f || maxAreaSq <= areaCapSq)
+                {
+                    break;
+                }
+
+                ratio = std::min(1.0f, ratio * 1.6f + 0.01f);
+                error = std::max(1e-4f, error * 0.6f);
             }
 
-            const float maxLenSq = avgLenSq * (12.0f + aggressiveness * 72.0f + static_cast<float>(pass) * 4.0f);
-            candidates.clear();
-            candidates.reserve(edges.size());
+            interiorVertices.swap(bestVertices);
+            interiorIndicesRemapped.swap(bestIndices);
+        }
 
-            for (const EdgeCandidate& edge : edges)
+        std::vector<glm::vec3> mergedVertices;
+        std::vector<uint32_t> mergedIndices;
+        mergedVertices.reserve(borderVertices.size() + interiorVertices.size());
+        mergedIndices.reserve(borderIndicesRemapped.size() + interiorIndicesRemapped.size());
+
+        if (!borderVertices.empty() && !borderIndicesRemapped.empty())
+        {
+            mergedVertices.insert(mergedVertices.end(), borderVertices.begin(), borderVertices.end());
+            mergedIndices.insert(mergedIndices.end(), borderIndicesRemapped.begin(), borderIndicesRemapped.end());
+        }
+
+        if (!interiorVertices.empty() && !interiorIndicesRemapped.empty())
+        {
+            const uint32_t offset = static_cast<uint32_t>(mergedVertices.size());
+            mergedVertices.insert(mergedVertices.end(), interiorVertices.begin(), interiorVertices.end());
+            mergedIndices.reserve(mergedIndices.size() + interiorIndicesRemapped.size());
+            for (uint32_t idx : interiorIndicesRemapped)
             {
-                if (edge.usage != 2 || edge.lenSq > maxLenSq)
-                {
-                    continue;
-                }
+                mergedIndices.push_back(idx + offset);
+            }
+        }
 
-                const uint32_t a = edge.a;
-                const uint32_t b = edge.b;
-                if (a >= boundaryVertex.size() || b >= boundaryVertex.size())
-                {
-                    continue;
-                }
+        if (mergedVertices.empty() || mergedIndices.empty())
+        {
+            return false;
+        }
 
-                if (boundaryVertex[a] || boundaryVertex[b])
-                {
-                    continue;
-                }
+        verticesInOut.swap(mergedVertices);
+        indicesInOut.swap(mergedIndices);
 
-                if (valence[a] <= 2 || valence[b] <= 2)
-                {
-                    continue;
-                }
+        WeldRawMeshExact(verticesInOut, indicesInOut);
+        return !verticesInOut.empty() && !indicesInOut.empty();
+    }
 
-                const int32_t newValence = std::max<int32_t>(3, valence[a] + valence[b] - 4);
-                const float valencePenalty =
-                    0.30f * static_cast<float>(std::abs(newValence - 6)) +
-                    0.95f * static_cast<float>(std::max(0, newValence - 7) * std::max(0, newValence - 7));
+    bool QuantizeAndBuildOutput(
+        const std::vector<glm::vec3>& rawVertices,
+        const std::vector<uint32_t>& rawIndices,
+        float cs,
+        float ch,
+        bool useForcedXZBounds,
+        float forcedMinX,
+        float forcedMaxX,
+        float forcedMinZ,
+        float forcedMaxZ,
+        std::vector<uint16_t>& outVertices,
+        std::vector<uint16_t>& outTriangles,
+        float outBoundsMin[3],
+        float outBoundsMax[3],
+        QuantizationFailureReason* failureReasonOut = nullptr,
+        size_t* failureValueOut = nullptr)
+    {
+        if (failureReasonOut != nullptr)
+        {
+            *failureReasonOut = QuantizationFailureReason::None;
+        }
+        if (failureValueOut != nullptr)
+        {
+            *failureValueOut = 0;
+        }
 
-                // Penalize collapsing edges that are too far from local average length
-                // so the final triangle sizes stay more evenly distributed.
-                const float normalizedLen = edge.lenSq / std::max(avgLenSq, 1e-8f);
-                const float distributionPenalty = std::fabs(normalizedLen - 1.0f);
+        outVertices.clear();
+        outTriangles.clear();
 
-                candidates.push_back(CollapseCandidate{
-                    a,
-                    b,
-                    edge.lenSq * (1.0f + 0.28f * distributionPenalty) +
-                        valencePenalty * avgLenSq
-                });
+        if (rawVertices.empty() || rawIndices.size() < 3)
+        {
+            if (failureReasonOut != nullptr)
+            {
+                *failureReasonOut = QuantizationFailureReason::EmptyRaw;
+            }
+            application::util::Logger::Error(
+                "PhiveNavMesh",
+                "Quantization failed: empty raw geometry (rawVertices=%zu rawIndices=%zu)",
+                rawVertices.size(),
+                rawIndices.size());
+            return false;
+        }
+
+        float minX = rawVertices[0].x;
+        float minY = rawVertices[0].y;
+        float minZ = rawVertices[0].z;
+        float maxX = rawVertices[0].x;
+        float maxY = rawVertices[0].y;
+        float maxZ = rawVertices[0].z;
+
+        for (const glm::vec3& vertex : rawVertices)
+        {
+            minX = std::min(minX, vertex.x);
+            minY = std::min(minY, vertex.y);
+            minZ = std::min(minZ, vertex.z);
+            maxX = std::max(maxX, vertex.x);
+            maxY = std::max(maxY, vertex.y);
+            maxZ = std::max(maxZ, vertex.z);
+        }
+
+        if (useForcedXZBounds)
+        {
+            minX = forcedMinX;
+            maxX = forcedMaxX;
+            minZ = forcedMinZ;
+            maxZ = forcedMaxZ;
+        }
+
+        if (maxX - minX < cs)
+        {
+            maxX = minX + cs;
+        }
+
+        if (maxY - minY < ch)
+        {
+            maxY = minY + ch;
+        }
+
+        if (maxZ - minZ < cs)
+        {
+            maxZ = minZ + cs;
+        }
+
+        const float spanX = (maxX - minX) / cs;
+        const float spanY = (maxY - minY) / ch;
+        const float spanZ = (maxZ - minZ) / cs;
+        if (spanX > 65535.0f || spanY > 65535.0f || spanZ > 65535.0f)
+        {
+            if (failureReasonOut != nullptr)
+            {
+                *failureReasonOut = QuantizationFailureReason::SpanOverflow;
+            }
+            application::util::Logger::Error(
+                "PhiveNavMesh",
+                "Quantization failed: bounds exceed uint16 quantization range (spanX=%.2f spanY=%.2f spanZ=%.2f)",
+                spanX,
+                spanY,
+                spanZ);
+            return false;
+        }
+
+        outBoundsMin[0] = minX;
+        outBoundsMin[1] = minY;
+        outBoundsMin[2] = minZ;
+        outBoundsMax[0] = maxX;
+        outBoundsMax[1] = maxY;
+        outBoundsMax[2] = maxZ;
+
+        const float boundarySnapTolerance = std::max(cs * 0.6f, 0.02f);
+        const int32_t maxForcedQX = useForcedXZBounds
+            ? std::max(0, static_cast<int32_t>(std::floor((forcedMaxX - forcedMinX) / cs + 1e-5f)))
+            : std::numeric_limits<int32_t>::max();
+        const int32_t maxForcedQZ = useForcedXZBounds
+            ? std::max(0, static_cast<int32_t>(std::floor((forcedMaxZ - forcedMinZ) / cs + 1e-5f)))
+            : std::numeric_limits<int32_t>::max();
+
+        std::unordered_map<QuantizedVertexKey, uint32_t, QuantizedVertexKeyHash> vertexMap;
+        vertexMap.reserve(rawVertices.size());
+
+        std::vector<QuantizedVertexKey> compactVertices;
+        compactVertices.reserve(rawVertices.size());
+        std::vector<uint32_t> rawToCompact(rawVertices.size(), 0);
+
+        for (uint32_t i = 0; i < rawVertices.size(); ++i)
+        {
+            glm::vec3 vertex = rawVertices[i];
+            if (useForcedXZBounds)
+            {
+                vertex.x = SnapToBoundary(vertex.x, forcedMinX, forcedMaxX, boundarySnapTolerance);
+                vertex.z = SnapToBoundary(vertex.z, forcedMinZ, forcedMaxZ, boundarySnapTolerance);
+                vertex.x = ClampToRange(vertex.x, forcedMinX, forcedMaxX);
+                vertex.z = ClampToRange(vertex.z, forcedMinZ, forcedMaxZ);
             }
 
-            if (candidates.empty())
+            int32_t qx = static_cast<int32_t>(std::llround((vertex.x - minX) / cs));
+            const int32_t qy = static_cast<int32_t>(std::llround((vertex.y - minY) / ch));
+            int32_t qz = static_cast<int32_t>(std::llround((vertex.z - minZ) / cs));
+
+            if (useForcedXZBounds)
             {
-                break;
+                qx = std::clamp(qx, 0, maxForcedQX);
+                qz = std::clamp(qz, 0, maxForcedQZ);
             }
 
-            if (candidates.size() > maxCandidateCount)
+            const QuantizedVertexKey key{ ClampToU16(qx), ClampToU16(qy), ClampToU16(qz) };
+            auto existing = vertexMap.find(key);
+            if (existing != vertexMap.end())
             {
-                std::nth_element(
-                    candidates.begin(),
-                    candidates.begin() + static_cast<std::ptrdiff_t>(maxCandidateCount),
-                    candidates.end(),
-                    [](const CollapseCandidate& lhs, const CollapseCandidate& rhs) { return lhs.cost < rhs.cost; });
-                candidates.resize(maxCandidateCount);
+                rawToCompact[i] = existing->second;
+                continue;
             }
 
-            std::sort(
-                candidates.begin(),
-                candidates.end(),
-                [](const CollapseCandidate& lhs, const CollapseCandidate& rhs) { return lhs.cost < rhs.cost; });
+            const uint32_t newIndex = static_cast<uint32_t>(compactVertices.size());
+            compactVertices.push_back(key);
+            vertexMap.emplace(key, newIndex);
+            rawToCompact[i] = newIndex;
+        }
 
-            const size_t currentTriCount = indices.size() / 3;
-            const size_t targetReduction = (currentTriCount > targetTriangleCount) ? (currentTriCount - targetTriangleCount) : 0;
-            const size_t desiredCollapses = std::max<size_t>(
-                128,
-                std::min<size_t>(targetReduction * 20, currentTriCount));
-
-            std::vector<std::vector<uint32_t>> incidentTriangles(vertices.size());
-            for (uint32_t triIndex = 0; triIndex < static_cast<uint32_t>(currentTriCount); ++triIndex)
+        if (compactVertices.empty() || compactVertices.size() > 0xFFFFu)
+        {
+            if (failureReasonOut != nullptr)
             {
-                const uint32_t ia = indices[triIndex * 3 + 0];
-                const uint32_t ib = indices[triIndex * 3 + 1];
-                const uint32_t ic = indices[triIndex * 3 + 2];
-                if (ia < incidentTriangles.size()) incidentTriangles[ia].push_back(triIndex);
-                if (ib < incidentTriangles.size()) incidentTriangles[ib].push_back(triIndex);
-                if (ic < incidentTriangles.size()) incidentTriangles[ic].push_back(triIndex);
+                *failureReasonOut = QuantizationFailureReason::VertexOverflow;
+            }
+            if (failureValueOut != nullptr)
+            {
+                *failureValueOut = compactVertices.size();
+            }
+            application::util::Logger::Error(
+                "PhiveNavMesh",
+                "Quantization failed: compact vertex count out of range (%zu, max 65535)",
+                compactVertices.size());
+            return false;
+        }
+
+        std::unordered_set<TriangleKey, TriangleKeyHash> uniqueTriangles;
+        uniqueTriangles.reserve(rawIndices.size() / 3);
+
+        std::vector<uint32_t> finalIndices;
+        finalIndices.reserve(rawIndices.size());
+
+        for (size_t i = 0; i + 2 < rawIndices.size(); i += 3)
+        {
+            const uint32_t ra = rawIndices[i + 0];
+            const uint32_t rb = rawIndices[i + 1];
+            const uint32_t rc = rawIndices[i + 2];
+            if (ra >= rawToCompact.size() || rb >= rawToCompact.size() || rc >= rawToCompact.size())
+            {
+                continue;
             }
 
-            struct SimplificationTriInfo
+            const uint32_t a = rawToCompact[ra];
+            const uint32_t b = rawToCompact[rb];
+            const uint32_t c = rawToCompact[rc];
+            if (a == b || b == c || c == a)
             {
-                uint32_t mA = 0;
-                uint32_t mB = 0;
-                uint32_t mC = 0;
-                glm::vec3 mV0 = glm::vec3(0.0f);
-                glm::vec3 mV1 = glm::vec3(0.0f);
-                glm::vec3 mV2 = glm::vec3(0.0f);
-                float mMinX = 0.0f;
-                float mMaxX = 0.0f;
-                float mMinZ = 0.0f;
-                float mMaxZ = 0.0f;
-                float mCentroidY = 0.0f;
-                bool mValid = false;
-            };
+                continue;
+            }
 
-            const float simplifyBucketSize = std::max(std::sqrt(avgLenSq) * 3.0f, 0.5f);
-            const float simplifyInvBucket = 1.0f / simplifyBucketSize;
-            const float simplifyOverlapEps = std::max(simplifyBucketSize * 0.015f, 1e-4f);
-            const float simplifyOverlapHeightEps = std::max(0.05f, std::sqrt(std::max(minTriangleArea, 1e-8f)) * 6.0f);
-
-            std::vector<SimplificationTriInfo> simplificationTriInfos(currentTriCount);
-            std::unordered_map<Bucket2DKey, std::vector<uint32_t>, Bucket2DKeyHash> simplificationBuckets;
-            simplificationBuckets.reserve(currentTriCount * 2);
-
-            for (uint32_t triIndex = 0; triIndex < static_cast<uint32_t>(currentTriCount); ++triIndex)
+            const TriangleKey key = MakeTriangleKey(a, b, c);
+            if (!uniqueTriangles.insert(key).second)
             {
-                const uint32_t ia = indices[triIndex * 3 + 0];
-                const uint32_t ib = indices[triIndex * 3 + 1];
-                const uint32_t ic = indices[triIndex * 3 + 2];
-                if (ia >= vertices.size() || ib >= vertices.size() || ic >= vertices.size())
+                continue;
+            }
+
+            finalIndices.push_back(a);
+            finalIndices.push_back(b);
+            finalIndices.push_back(c);
+        }
+
+        if (finalIndices.empty())
+        {
+            if (failureReasonOut != nullptr)
+            {
+                *failureReasonOut = QuantizationFailureReason::Collapsed;
+            }
+            application::util::Logger::Error("PhiveNavMesh", "Quantization failed: all triangles collapsed/removed during dedup");
+            return false;
+        }
+
+        const size_t faceCount = finalIndices.size() / 3;
+        if (faceCount > 0xFFFFu)
+        {
+            if (failureReasonOut != nullptr)
+            {
+                *failureReasonOut = QuantizationFailureReason::FaceOverflow;
+            }
+            if (failureValueOut != nullptr)
+            {
+                *failureValueOut = faceCount;
+            }
+            application::util::Logger::Error(
+                "PhiveNavMesh",
+                "Quantization failed: face count out of range (%zu, max 65535)",
+                faceCount);
+            return false;
+        }
+
+        outVertices.resize(compactVertices.size() * 3);
+        for (size_t i = 0; i < compactVertices.size(); ++i)
+        {
+            outVertices[i * 3 + 0] = compactVertices[i].mX;
+            outVertices[i * 3 + 1] = compactVertices[i].mY;
+            outVertices[i * 3 + 2] = compactVertices[i].mZ;
+        }
+
+        std::unordered_map<UndirectedEdgeKey, std::vector<EdgeRef>, UndirectedEdgeKeyHash> edgeBuckets;
+        edgeBuckets.reserve(faceCount * 2);
+
+        for (uint32_t face = 0; face < static_cast<uint32_t>(faceCount); ++face)
+        {
+            const uint32_t a = finalIndices[face * 3 + 0];
+            const uint32_t b = finalIndices[face * 3 + 1];
+            const uint32_t c = finalIndices[face * 3 + 2];
+
+            edgeBuckets[MakeUndirectedEdgeKey(a, b)].push_back(EdgeRef{ face, 0, a, b });
+            edgeBuckets[MakeUndirectedEdgeKey(b, c)].push_back(EdgeRef{ face, 1, b, c });
+            edgeBuckets[MakeUndirectedEdgeKey(c, a)].push_back(EdgeRef{ face, 2, c, a });
+        }
+
+        std::vector<uint16_t> oppositeFaces(faceCount * 3, INVALID_FACE_INDEX);
+
+        for (const auto& [edge, refs] : edgeBuckets)
+        {
+            if (refs.size() < 2)
+            {
+                continue;
+            }
+
+            std::vector<uint8_t> used(refs.size(), 0);
+            for (size_t i = 0; i < refs.size(); ++i)
+            {
+                if (used[i])
                 {
                     continue;
                 }
 
-                if (ia == ib || ib == ic || ic == ia)
+                for (size_t j = i + 1; j < refs.size(); ++j)
                 {
-                    continue;
-                }
-
-                const glm::vec3& v0 = vertices[ia];
-                const glm::vec3& v1 = vertices[ib];
-                const glm::vec3& v2 = vertices[ic];
-                if (!IsFiniteVec3(v0) || !IsFiniteVec3(v1) || !IsFiniteVec3(v2))
-                {
-                    continue;
-                }
-
-                SimplificationTriInfo& info = simplificationTriInfos[triIndex];
-                info.mA = ia;
-                info.mB = ib;
-                info.mC = ic;
-                info.mV0 = v0;
-                info.mV1 = v1;
-                info.mV2 = v2;
-                info.mMinX = std::min({ v0.x, v1.x, v2.x });
-                info.mMaxX = std::max({ v0.x, v1.x, v2.x });
-                info.mMinZ = std::min({ v0.z, v1.z, v2.z });
-                info.mMaxZ = std::max({ v0.z, v1.z, v2.z });
-                info.mCentroidY = (v0.y + v1.y + v2.y) / 3.0f;
-                info.mValid = true;
-
-                const int32_t minBX = static_cast<int32_t>(std::floor(info.mMinX * simplifyInvBucket));
-                const int32_t maxBX = static_cast<int32_t>(std::floor(info.mMaxX * simplifyInvBucket));
-                const int32_t minBZ = static_cast<int32_t>(std::floor(info.mMinZ * simplifyInvBucket));
-                const int32_t maxBZ = static_cast<int32_t>(std::floor(info.mMaxZ * simplifyInvBucket));
-
-                for (int32_t bz = minBZ; bz <= maxBZ; ++bz)
-                {
-                    for (int32_t bx = minBX; bx <= maxBX; ++bx)
+                    if (used[j])
                     {
-                        simplificationBuckets[Bucket2DKey{ bx, bz }].push_back(triIndex);
+                        continue;
+                    }
+
+                    if (refs[i].mA != refs[j].mB || refs[i].mB != refs[j].mA)
+                    {
+                        continue;
+                    }
+
+                    used[i] = 1;
+                    used[j] = 1;
+                    oppositeFaces[refs[i].mFace * 3 + refs[i].mLocalEdge] = static_cast<uint16_t>(refs[j].mFace);
+                    oppositeFaces[refs[j].mFace * 3 + refs[j].mLocalEdge] = static_cast<uint16_t>(refs[i].mFace);
+                    break;
+                }
+            }
+        }
+
+        outTriangles.resize(faceCount * 6);
+        for (size_t face = 0; face < faceCount; ++face)
+        {
+            outTriangles[face * 6 + 0] = static_cast<uint16_t>(finalIndices[face * 3 + 0]);
+            outTriangles[face * 6 + 1] = static_cast<uint16_t>(finalIndices[face * 3 + 1]);
+            outTriangles[face * 6 + 2] = static_cast<uint16_t>(finalIndices[face * 3 + 2]);
+            outTriangles[face * 6 + 3] = oppositeFaces[face * 3 + 0];
+            outTriangles[face * 6 + 4] = oppositeFaces[face * 3 + 1];
+            outTriangles[face * 6 + 5] = oppositeFaces[face * 3 + 2];
+        }
+
+        return !outVertices.empty() && !outTriangles.empty();
+    }
+
+    bool FilterTrianglesBySlope(
+        const float* inputVertices,
+        int inputVertexCount,
+        const int* inputIndices,
+        int inputIndexCount,
+        float walkableCos,
+        bool useForcedXZBounds,
+        float forcedMinX,
+        float forcedMaxX,
+        float forcedMinZ,
+        float forcedMaxZ,
+        float cs,
+        std::vector<glm::vec3>& verticesOut,
+        std::vector<uint32_t>& indicesOut)
+    {
+        verticesOut.clear();
+        indicesOut.clear();
+
+        if (inputVertices == nullptr || inputIndices == nullptr || inputVertexCount <= 0 || inputIndexCount < 3)
+        {
+            return false;
+        }
+
+        const float boundarySnapTolerance = std::max(cs * 0.6f, 0.02f);
+
+        verticesOut.reserve(static_cast<size_t>(inputIndexCount));
+        indicesOut.reserve(static_cast<size_t>(inputIndexCount));
+
+        for (int tri = 0; tri + 2 < inputIndexCount; tri += 3)
+        {
+            const int ia = inputIndices[tri + 0];
+            const int ib = inputIndices[tri + 1];
+            const int ic = inputIndices[tri + 2];
+
+            if (ia < 0 || ib < 0 || ic < 0 || ia >= inputVertexCount || ib >= inputVertexCount || ic >= inputVertexCount)
+            {
+                continue;
+            }
+
+            glm::vec3 a(
+                inputVertices[ia * 3 + 0],
+                inputVertices[ia * 3 + 1],
+                inputVertices[ia * 3 + 2]);
+            glm::vec3 b(
+                inputVertices[ib * 3 + 0],
+                inputVertices[ib * 3 + 1],
+                inputVertices[ib * 3 + 2]);
+            glm::vec3 c(
+                inputVertices[ic * 3 + 0],
+                inputVertices[ic * 3 + 1],
+                inputVertices[ic * 3 + 2]);
+
+            if (!IsFiniteVec3(a) || !IsFiniteVec3(b) || !IsFiniteVec3(c))
+            {
+                continue;
+            }
+
+            if (useForcedXZBounds)
+            {
+                a.x = ClampToRange(SnapToBoundary(a.x, forcedMinX, forcedMaxX, boundarySnapTolerance), forcedMinX, forcedMaxX);
+                a.z = ClampToRange(SnapToBoundary(a.z, forcedMinZ, forcedMaxZ, boundarySnapTolerance), forcedMinZ, forcedMaxZ);
+                b.x = ClampToRange(SnapToBoundary(b.x, forcedMinX, forcedMaxX, boundarySnapTolerance), forcedMinX, forcedMaxX);
+                b.z = ClampToRange(SnapToBoundary(b.z, forcedMinZ, forcedMaxZ, boundarySnapTolerance), forcedMinZ, forcedMaxZ);
+                c.x = ClampToRange(SnapToBoundary(c.x, forcedMinX, forcedMaxX, boundarySnapTolerance), forcedMinX, forcedMaxX);
+                c.z = ClampToRange(SnapToBoundary(c.z, forcedMinZ, forcedMaxZ, boundarySnapTolerance), forcedMinZ, forcedMaxZ);
+            }
+
+            const glm::vec3 cross = glm::cross(b - a, c - a);
+            const float crossLen = glm::length(cross);
+            if (crossLen <= 1e-8f)
+            {
+                continue;
+            }
+
+            const float normalYAbs = std::fabs(cross.y / crossLen);
+            if (normalYAbs < walkableCos)
+            {
+                continue;
+            }
+
+            const uint32_t base = static_cast<uint32_t>(verticesOut.size());
+            verticesOut.push_back(a);
+            verticesOut.push_back(b);
+            verticesOut.push_back(c);
+            indicesOut.push_back(base + 0);
+            indicesOut.push_back(base + 1);
+            indicesOut.push_back(base + 2);
+        }
+
+        RemoveDegenerateAndDuplicateTriangles(verticesOut, indicesOut);
+        return !verticesOut.empty() && !indicesOut.empty();
+    }
+
+    bool VoxelizeGeometry(
+        const std::vector<glm::vec3>& vertices,
+        const std::vector<uint32_t>& indices,
+        float cs,
+        float ch,
+        bool useForcedXZBounds,
+        float forcedMinX,
+        float forcedMaxX,
+        float forcedMinZ,
+        float forcedMaxZ,
+        std::vector<VoxelCoord>& voxelsOut,
+        std::unordered_set<uint64_t>& voxelSetOut,
+        float& minXOut,
+        float& minYOut,
+        float& minZOut,
+        int& nxOut,
+        int& nyOut,
+        int& nzOut)
+    {
+        voxelsOut.clear();
+        voxelSetOut.clear();
+
+        if (vertices.empty() || indices.size() < 3)
+        {
+            return false;
+        }
+
+        float minX = vertices[0].x;
+        float minY = vertices[0].y;
+        float minZ = vertices[0].z;
+        float maxX = vertices[0].x;
+        float maxY = vertices[0].y;
+        float maxZ = vertices[0].z;
+
+        for (const glm::vec3& v : vertices)
+        {
+            minX = std::min(minX, v.x);
+            minY = std::min(minY, v.y);
+            minZ = std::min(minZ, v.z);
+            maxX = std::max(maxX, v.x);
+            maxY = std::max(maxY, v.y);
+            maxZ = std::max(maxZ, v.z);
+        }
+
+        if (useForcedXZBounds)
+        {
+            minX = forcedMinX;
+            maxX = forcedMaxX;
+            minZ = forcedMinZ;
+            maxZ = forcedMaxZ;
+        }
+
+        if (maxX - minX < cs)
+        {
+            maxX = minX + cs;
+        }
+        if (maxY - minY < ch)
+        {
+            maxY = minY + ch;
+        }
+        if (maxZ - minZ < cs)
+        {
+            maxZ = minZ + cs;
+        }
+
+        const int nx = std::max(1, static_cast<int>(std::ceil((maxX - minX) / cs)));
+        const int ny = std::max(1, static_cast<int>(std::ceil((maxY - minY) / ch)));
+        const int nz = std::max(1, static_cast<int>(std::ceil((maxZ - minZ) / cs)));
+
+        if (nx >= 0x1FFFFF || ny >= 0x1FFFFF || nz >= 0x1FFFFF)
+        {
+            application::util::Logger::Error(
+                "PhiveNavMesh",
+                "Voxelization aborted: voxel grid too large (%d x %d x %d)",
+                nx,
+                ny,
+                nz);
+            return false;
+        }
+
+        const float voxelRadiusSq = 0.25f * (2.0f * cs * cs + ch * ch);
+
+        voxelSetOut.reserve(indices.size());
+        voxelsOut.reserve(indices.size());
+
+        for (size_t tri = 0; tri + 2 < indices.size(); tri += 3)
+        {
+            const uint32_t ia = indices[tri + 0];
+            const uint32_t ib = indices[tri + 1];
+            const uint32_t ic = indices[tri + 2];
+            if (ia >= vertices.size() || ib >= vertices.size() || ic >= vertices.size())
+            {
+                continue;
+            }
+
+            const glm::vec3& a = vertices[ia];
+            const glm::vec3& b = vertices[ib];
+            const glm::vec3& c = vertices[ic];
+
+            float triMinX = std::min({ a.x, b.x, c.x });
+            float triMaxX = std::max({ a.x, b.x, c.x });
+            float triMinY = std::min({ a.y, b.y, c.y });
+            float triMaxY = std::max({ a.y, b.y, c.y });
+            float triMinZ = std::min({ a.z, b.z, c.z });
+            float triMaxZ = std::max({ a.z, b.z, c.z });
+
+            if (useForcedXZBounds)
+            {
+                triMinX = ClampToRange(triMinX, minX, maxX);
+                triMaxX = ClampToRange(triMaxX, minX, maxX);
+                triMinZ = ClampToRange(triMinZ, minZ, maxZ);
+                triMaxZ = ClampToRange(triMaxZ, minZ, maxZ);
+            }
+
+            int minVX = std::max(0, static_cast<int>(std::floor((triMinX - minX) / cs)));
+            int maxVX = std::min(nx - 1, static_cast<int>(std::floor((triMaxX - minX) / cs)));
+            int minVY = std::max(0, static_cast<int>(std::floor((triMinY - minY) / ch)));
+            int maxVY = std::min(ny - 1, static_cast<int>(std::floor((triMaxY - minY) / ch)));
+            int minVZ = std::max(0, static_cast<int>(std::floor((triMinZ - minZ) / cs)));
+            int maxVZ = std::min(nz - 1, static_cast<int>(std::floor((triMaxZ - minZ) / cs)));
+
+            if (minVX > maxVX || minVY > maxVY || minVZ > maxVZ)
+            {
+                continue;
+            }
+
+            for (int z = minVZ; z <= maxVZ; ++z)
+            {
+                const float centerZ = minZ + (static_cast<float>(z) + 0.5f) * cs;
+                for (int y = minVY; y <= maxVY; ++y)
+                {
+                    const float centerY = minY + (static_cast<float>(y) + 0.5f) * ch;
+                    for (int x = minVX; x <= maxVX; ++x)
+                    {
+                        const float centerX = minX + (static_cast<float>(x) + 0.5f) * cs;
+                        const glm::vec3 p(centerX, centerY, centerZ);
+                        if (DistancePointTriangleSquared(p, a, b, c) > voxelRadiusSq)
+                        {
+                            continue;
+                        }
+
+                        const uint64_t key = MakeVoxelKey(x, y, z);
+                        if (!voxelSetOut.insert(key).second)
+                        {
+                            continue;
+                        }
+
+                        voxelsOut.push_back(VoxelCoord{ x, y, z });
                     }
                 }
             }
+        }
 
-            std::vector<uint32_t> affectedStamp(currentTriCount, 0);
-            std::vector<uint32_t> candidateStamp(currentTriCount, 0);
-            uint32_t affectedStampValue = 1;
-            uint32_t candidateStampValue = 1;
+        if (voxelsOut.empty())
+        {
+            return false;
+        }
 
-            const auto IsCollapseLocallyValid = [&](uint32_t keep, uint32_t remove, const glm::vec3& mergedPos)
+        minXOut = minX;
+        minYOut = minY;
+        minZOut = minZ;
+        nxOut = nx;
+        nyOut = ny;
+        nzOut = nz;
+        return true;
+    }
+
+    void FilterWalkableVoxelsAndSmooth(
+        const std::vector<VoxelCoord>& voxels,
+        const std::unordered_set<uint64_t>& voxelSet,
+        std::vector<VoxelCoord>& filteredVoxelsOut,
+        std::unordered_set<uint64_t>& filteredSetOut,
+        std::unordered_map<uint64_t, int>& columnYOut,
+        std::unordered_map<uint64_t, float>& smoothedYOut,
+        std::unordered_map<uint64_t, float>& smoothedVoxelYOut,
+        float minLayerSeparationWorld,
+        float cellHeight,
+        int stitchYCells)
+    {
+        filteredVoxelsOut.clear();
+        filteredSetOut.clear();
+        columnYOut.clear();
+        smoothedYOut.clear();
+        smoothedVoxelYOut.clear();
+
+        auto PackXZ = [](int x, int z) -> uint64_t
+            {
+                return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) |
+                    static_cast<uint64_t>(static_cast<uint32_t>(z));
+            };
+
+        auto UnpackX = [](uint64_t key) -> int
+            {
+                return static_cast<int>(static_cast<uint32_t>(key >> 32));
+            };
+        auto UnpackZ = [](uint64_t key) -> int
+            {
+                return static_cast<int>(static_cast<uint32_t>(key & 0xffffffffu));
+            };
+
+        std::unordered_map<uint64_t, std::vector<int>> columnYs;
+        columnYs.reserve(voxels.size() * 2 + 1);
+        for (const VoxelCoord& v : voxels)
+        {
+            columnYs[PackXZ(v.mX, v.mZ)].push_back(v.mY);
+        }
+
+        filteredVoxelsOut.reserve(voxels.size());
+        filteredSetOut.reserve(voxels.size() * 2 + 1);
+
+        const float separationWorld = std::max(0.0f, minLayerSeparationWorld);
+        const float safeCellHeight = std::max(1e-6f, cellHeight);
+
+        for (auto& entry : columnYs)
+        {
+            const uint64_t key = entry.first;
+            auto& ys = entry.second;
+            if (ys.empty())
+            {
+                continue;
+            }
+
+            std::sort(ys.begin(), ys.end(), [](int a, int b) { return a > b; });
+
+            const int x = UnpackX(key);
+            const int z = UnpackZ(key);
+
+            auto TryAddVoxel = [&](int y) -> bool
                 {
-                    if (keep >= incidentTriangles.size() || remove >= incidentTriangles.size())
+                    const uint64_t vkey = MakeVoxelKey(x, y, z);
+                    if (voxelSet.find(vkey) == voxelSet.end())
                     {
                         return false;
                     }
 
-                    std::vector<uint32_t> affectedTriangles;
-                    affectedTriangles.reserve(incidentTriangles[keep].size() + incidentTriangles[remove].size());
-                    affectedTriangles.insert(
-                        affectedTriangles.end(),
-                        incidentTriangles[keep].begin(),
-                        incidentTriangles[keep].end());
-                    affectedTriangles.insert(
-                        affectedTriangles.end(),
-                        incidentTriangles[remove].begin(),
-                        incidentTriangles[remove].end());
-                    std::sort(affectedTriangles.begin(), affectedTriangles.end());
-                    affectedTriangles.erase(std::unique(affectedTriangles.begin(), affectedTriangles.end()), affectedTriangles.end());
-
-                    if (++affectedStampValue == 0)
-                    {
-                        std::fill(affectedStamp.begin(), affectedStamp.end(), 0);
-                        affectedStampValue = 1;
-                    }
-                    for (uint32_t triIndex : affectedTriangles)
-                    {
-                        if (triIndex < currentTriCount)
-                        {
-                            affectedStamp[triIndex] = affectedStampValue;
-                        }
-                    }
-
-                    struct ProposedTriangle
-                    {
-                        uint32_t mA = 0;
-                        uint32_t mB = 0;
-                        uint32_t mC = 0;
-                        glm::vec3 mV0 = glm::vec3(0.0f);
-                        glm::vec3 mV1 = glm::vec3(0.0f);
-                        glm::vec3 mV2 = glm::vec3(0.0f);
-                        float mMinX = 0.0f;
-                        float mMaxX = 0.0f;
-                        float mMinZ = 0.0f;
-                        float mMaxZ = 0.0f;
-                        float mCentroidY = 0.0f;
-                    };
-
-                    std::vector<ProposedTriangle> proposedTriangles;
-                    proposedTriangles.reserve(affectedTriangles.size());
-
-                    for (uint32_t triIndex : affectedTriangles)
-                    {
-                        if (triIndex >= currentTriCount)
-                        {
-                            continue;
-                        }
-
-                        uint32_t t0 = indices[triIndex * 3 + 0];
-                        uint32_t t1 = indices[triIndex * 3 + 1];
-                        uint32_t t2 = indices[triIndex * 3 + 2];
-                        if (t0 == remove) t0 = keep;
-                        if (t1 == remove) t1 = keep;
-                        if (t2 == remove) t2 = keep;
-
-                        if (t0 == t1 || t1 == t2 || t2 == t0)
-                        {
-                            continue;
-                        }
-
-                        if (t0 >= vertices.size() || t1 >= vertices.size() || t2 >= vertices.size())
-                        {
-                            return false;
-                        }
-
-                        const glm::vec3 v0 = (t0 == keep) ? mergedPos : vertices[t0];
-                        const glm::vec3 v1 = (t1 == keep) ? mergedPos : vertices[t1];
-                        const glm::vec3 v2 = (t2 == keep) ? mergedPos : vertices[t2];
-                        if (!IsFiniteVec3(v0) || !IsFiniteVec3(v1) || !IsFiniteVec3(v2))
-                        {
-                            return false;
-                        }
-
-                        const glm::vec3 cross = glm::cross(v1 - v0, v2 - v0);
-                        const float crossLen = glm::length(cross);
-                        if (crossLen <= 1e-8f)
-                        {
-                            return false;
-                        }
-
-                        const float area = crossLen * 0.5f;
-                        if (area <= minTriangleArea)
-                        {
-                            return false;
-                        }
-
-                        const float normalY = cross.y / crossLen;
-                        if (std::fabs(normalY) < walkableCos)
-                        {
-                            return false;
-                        }
-
-                        ProposedTriangle tri;
-                        tri.mA = t0;
-                        tri.mB = t1;
-                        tri.mC = t2;
-                        tri.mV0 = v0;
-                        tri.mV1 = v1;
-                        tri.mV2 = v2;
-                        tri.mMinX = std::min({ v0.x, v1.x, v2.x });
-                        tri.mMaxX = std::max({ v0.x, v1.x, v2.x });
-                        tri.mMinZ = std::min({ v0.z, v1.z, v2.z });
-                        tri.mMaxZ = std::max({ v0.z, v1.z, v2.z });
-                        tri.mCentroidY = (v0.y + v1.y + v2.y) / 3.0f;
-                        proposedTriangles.push_back(tri);
-                    }
-
-                    std::vector<uint32_t> nearbyCandidates;
-                    nearbyCandidates.reserve(128);
-                    for (const ProposedTriangle& tri : proposedTriangles)
-                    {
-                        if (++candidateStampValue == 0)
-                        {
-                            std::fill(candidateStamp.begin(), candidateStamp.end(), 0);
-                            candidateStampValue = 1;
-                        }
-
-                        nearbyCandidates.clear();
-                        const int32_t minBX = static_cast<int32_t>(std::floor(tri.mMinX * simplifyInvBucket));
-                        const int32_t maxBX = static_cast<int32_t>(std::floor(tri.mMaxX * simplifyInvBucket));
-                        const int32_t minBZ = static_cast<int32_t>(std::floor(tri.mMinZ * simplifyInvBucket));
-                        const int32_t maxBZ = static_cast<int32_t>(std::floor(tri.mMaxZ * simplifyInvBucket));
-
-                        for (int32_t bz = minBZ; bz <= maxBZ; ++bz)
-                        {
-                            for (int32_t bx = minBX; bx <= maxBX; ++bx)
-                            {
-                                auto bucketIter = simplificationBuckets.find(Bucket2DKey{ bx, bz });
-                                if (bucketIter == simplificationBuckets.end())
-                                {
-                                    continue;
-                                }
-
-                                for (uint32_t candidateTriIndex : bucketIter->second)
-                                {
-                                    if (candidateTriIndex >= currentTriCount || !simplificationTriInfos[candidateTriIndex].mValid)
-                                    {
-                                        continue;
-                                    }
-
-                                    if (affectedStamp[candidateTriIndex] == affectedStampValue)
-                                    {
-                                        continue;
-                                    }
-
-                                    if (candidateStamp[candidateTriIndex] == candidateStampValue)
-                                    {
-                                        continue;
-                                    }
-
-                                    candidateStamp[candidateTriIndex] = candidateStampValue;
-                                    nearbyCandidates.push_back(candidateTriIndex);
-                                }
-                            }
-                        }
-
-                        for (uint32_t candidateTriIndex : nearbyCandidates)
-                        {
-                            const SimplificationTriInfo& candidateTri = simplificationTriInfos[candidateTriIndex];
-                            if (tri.mMaxX < candidateTri.mMinX - simplifyOverlapEps || tri.mMinX > candidateTri.mMaxX + simplifyOverlapEps ||
-                                tri.mMaxZ < candidateTri.mMinZ - simplifyOverlapEps || tri.mMinZ > candidateTri.mMaxZ + simplifyOverlapEps)
-                            {
-                                continue;
-                            }
-
-                            if (CountSharedVertices(tri.mA, tri.mB, tri.mC, candidateTri.mA, candidateTri.mB, candidateTri.mC) >= 2)
-                            {
-                                continue;
-                            }
-
-                            if (!TrianglesOverlapInXZStrict(
-                                    tri.mV0,
-                                    tri.mV1,
-                                    tri.mV2,
-                                    candidateTri.mV0,
-                                    candidateTri.mV1,
-                                    candidateTri.mV2,
-                                    simplifyOverlapEps))
-                            {
-                                continue;
-                            }
-
-                            if (std::fabs(tri.mCentroidY - candidateTri.mCentroidY) <= simplifyOverlapHeightEps)
-                            {
-                                return false;
-                            }
-                        }
-                    }
-
+                    filteredVoxelsOut.push_back(VoxelCoord{ x, y, z });
+                    filteredSetOut.insert(vkey);
                     return true;
                 };
 
-            std::vector<uint8_t> lockedVertex(vertices.size(), 0);
-            std::vector<uint32_t> remap(vertices.size());
-            for (uint32_t i = 0; i < remap.size(); ++i)
+            int lastKeptY = ys.front();
+            if (!TryAddVoxel(lastKeptY))
             {
-                remap[i] = i;
+                continue;
             }
 
-            size_t selectedCollapses = 0;
-            for (const CollapseCandidate& candidate : candidates)
+            columnYOut[key] = lastKeptY;
+
+            for (size_t i = 1; i < ys.size(); ++i)
             {
-                uint32_t a = candidate.a;
-                uint32_t b = candidate.b;
-                if (a >= vertices.size() || b >= vertices.size() || lockedVertex[a] || lockedVertex[b])
+                const int candidateY = ys[i];
+                if (separationWorld <= 0.0f ||
+                    static_cast<float>(lastKeptY - candidateY) * safeCellHeight >= separationWorld)
                 {
-                    continue;
+                    if (TryAddVoxel(candidateY))
+                    {
+                        lastKeptY = candidateY;
+                    }
                 }
-
-                uint32_t keep = a;
-                uint32_t remove = b;
-                if (valence[keep] > valence[remove] || (valence[keep] == valence[remove] && keep > remove))
-                {
-                    std::swap(keep, remove);
-                }
-
-                if (keep >= vertices.size() || remove >= vertices.size() || keep == remove)
-                {
-                    continue;
-                }
-
-                glm::vec3 merged = (vertices[keep] + vertices[remove]) * 0.5f;
-                ClampVertexToBounds(merged);
-                if (!IsCollapseLocallyValid(keep, remove, merged))
-                {
-                    continue;
-                }
-
-                vertices[keep] = merged;
-                remap[remove] = keep;
-                lockedVertex[a] = 1;
-                lockedVertex[b] = 1;
-
-                selectedCollapses++;
-                if (selectedCollapses >= desiredCollapses)
-                {
-                    break;
-                }
-            }
-
-            if (selectedCollapses == 0)
-            {
-                break;
-            }
-
-            for (uint32_t i = 0; i < remap.size(); ++i)
-            {
-                uint32_t r = i;
-                while (remap[r] != r)
-                {
-                    r = remap[r];
-                }
-
-                uint32_t cur = i;
-                while (remap[cur] != cur)
-                {
-                    const uint32_t next = remap[cur];
-                    remap[cur] = r;
-                    cur = next;
-                }
-            }
-
-            for (uint32_t& index : indices)
-            {
-                if (index < remap.size())
-                {
-                    index = remap[index];
-                }
-            }
-
-            const size_t triBeforeCleanup = indices.size() / 3;
-            RemoveDegenerateAndDuplicateTriangleIndices(indices, vertices, minTriangleArea);
-            const size_t triAfterCleanup = indices.size() / 3;
-            if (indices.size() < 9 || triAfterCleanup >= triBeforeCleanup)
-            {
-                break;
             }
         }
 
-        const size_t triAfterCollapse = indices.size() / 3;
-        const bool doFlip = triAfterCollapse > 1 && triAfterCollapse <= 25000;
-        if (doFlip)
+        if (filteredVoxelsOut.empty())
         {
-            struct EdgeIncident
+            return;
+        }
+
+        auto HasVoxel = [&](int x, int z, int y) -> bool
             {
-                uint32_t mTri = 0;
-                uint8_t mSlot = 0;
-                uint32_t mA = 0;
-                uint32_t mB = 0;
-                uint32_t mOpp = 0;
+                return filteredSetOut.find(MakeVoxelKey(x, y, z)) != filteredSetOut.end();
             };
 
-            const int flipPassCount = (triAfterCollapse <= 20000) ? 2 : 1;
-            for (int pass = 0; pass < flipPassCount; ++pass)
-            {
-                const size_t triCount = indices.size() / 3;
-                std::vector<int32_t> flipValence(vertices.size(), 0);
-                for (size_t t = 0; t < triCount; ++t)
-                {
-                    const uint32_t a = indices[t * 3 + 0];
-                    const uint32_t b = indices[t * 3 + 1];
-                    const uint32_t c = indices[t * 3 + 2];
-                    if (a < flipValence.size()) flipValence[a]++;
-                    if (b < flipValence.size()) flipValence[b]++;
-                    if (c < flipValence.size()) flipValence[c]++;
-                }
-
-                std::unordered_map<UndirectedEdgeKey, std::vector<EdgeIncident>, UndirectedEdgeKeyHash> edgeIncidents;
-                edgeIncidents.reserve(indices.size());
-                for (size_t t = 0; t < triCount; ++t)
-                {
-                    const uint32_t tri[3] = {
-                        indices[t * 3 + 0],
-                        indices[t * 3 + 1],
-                        indices[t * 3 + 2]
-                    };
-
-                    for (uint8_t e = 0; e < 3; ++e)
-                    {
-                        const uint32_t v0 = tri[e];
-                        const uint32_t v1 = tri[(e + 1) % 3];
-                        const uint32_t opp = tri[(e + 2) % 3];
-                        if (v0 == v1 || v0 >= vertices.size() || v1 >= vertices.size() || opp >= vertices.size())
-                        {
-                            continue;
-                        }
-
-                        edgeIncidents[MakeUndirectedEdgeKey(v0, v1)].push_back(
-                            EdgeIncident{ static_cast<uint32_t>(t), e, v0, v1, opp });
-                    }
-                }
-
-                std::vector<uint8_t> triLocked(triCount, 0);
-                bool anyFlip = false;
-
-                for (const auto& [edgeKey, incidents] : edgeIncidents)
-                {
-                    if (incidents.size() != 2)
-                    {
-                        continue;
-                    }
-
-                    const EdgeIncident& i0 = incidents[0];
-                    const EdgeIncident& i1 = incidents[1];
-                    if (i0.mTri >= triLocked.size() || i1.mTri >= triLocked.size() || triLocked[i0.mTri] || triLocked[i1.mTri])
-                    {
-                        continue;
-                    }
-
-                    const uint32_t a = i0.mA;
-                    const uint32_t b = i0.mB;
-                    const uint32_t c = i0.mOpp;
-                    const uint32_t d = i1.mOpp;
-
-                    if (a == b || c == d || a == c || a == d || b == c || b == d)
-                    {
-                        continue;
-                    }
-
-                    const float flipIntersectionEps = 1e-5f;
-                    if (!SegmentsIntersectStrictXZ(
-                            vertices[a],
-                            vertices[b],
-                            vertices[c],
-                            vertices[d],
-                            flipIntersectionEps))
-                    {
-                        continue;
-                    }
-
-                    const uint32_t before0[3] = {
-                        indices[i0.mTri * 3 + 0], indices[i0.mTri * 3 + 1], indices[i0.mTri * 3 + 2]
-                    };
-                    const uint32_t before1[3] = {
-                        indices[i1.mTri * 3 + 0], indices[i1.mTri * 3 + 1], indices[i1.mTri * 3 + 2]
-                    };
-
-                    const float beforeQuality = std::min(
-                        TriangleMinAngleRadians(vertices[before0[0]], vertices[before0[1]], vertices[before0[2]]),
-                        TriangleMinAngleRadians(vertices[before1[0]], vertices[before1[1]], vertices[before1[2]]));
-
-                    uint32_t after0[3] = { c, d, b };
-                    uint32_t after1[3] = { d, c, a };
-
-                    auto OrientUp = [&](uint32_t tri[3])
-                        {
-                            const glm::vec3& va = vertices[tri[0]];
-                            const glm::vec3& vb = vertices[tri[1]];
-                            const glm::vec3& vc = vertices[tri[2]];
-                            if (glm::cross(vb - va, vc - va).y < 0.0f)
-                            {
-                                std::swap(tri[1], tri[2]);
-                            }
-                        };
-
-                    OrientUp(after0);
-                    OrientUp(after1);
-
-                    const auto IsAcceptableTriangle = [&](const uint32_t tri[3])
-                        {
-                            if (tri[0] == tri[1] || tri[1] == tri[2] || tri[2] == tri[0])
-                            {
-                                return false;
-                            }
-
-                            const glm::vec3& va = vertices[tri[0]];
-                            const glm::vec3& vb = vertices[tri[1]];
-                            const glm::vec3& vc = vertices[tri[2]];
-                            const float area = glm::length(glm::cross(vb - va, vc - va)) * 0.5f;
-                            return area > minTriangleArea;
-                        };
-
-                    if (!IsAcceptableTriangle(after0) || !IsAcceptableTriangle(after1))
-                    {
-                        continue;
-                    }
-
-                    const float afterQuality = std::min(
-                        TriangleMinAngleRadians(vertices[after0[0]], vertices[after0[1]], vertices[after0[2]]),
-                        TriangleMinAngleRadians(vertices[after1[0]], vertices[after1[1]], vertices[after1[2]]));
-
-                    const auto ValenceScore = [&](int32_t va, int32_t vb, int32_t vc, int32_t vd)
-                        {
-                            return std::abs(va - 6) + std::abs(vb - 6) + std::abs(vc - 6) + std::abs(vd - 6);
-                        };
-
-                    const int beforeValenceScore = ValenceScore(
-                        flipValence[a], flipValence[b], flipValence[c], flipValence[d]);
-                    const int afterValenceScore = ValenceScore(
-                        flipValence[a] - 1, flipValence[b] - 1, flipValence[c] + 1, flipValence[d] + 1);
-
-                    const bool qualityImprovedEnough =
-                        (afterQuality > beforeQuality * 1.02f) ||
-                        (afterQuality >= beforeQuality && afterValenceScore < beforeValenceScore);
-                    if (!qualityImprovedEnough)
-                    {
-                        continue;
-                    }
-
-                    indices[i0.mTri * 3 + 0] = after0[0];
-                    indices[i0.mTri * 3 + 1] = after0[1];
-                    indices[i0.mTri * 3 + 2] = after0[2];
-
-                    indices[i1.mTri * 3 + 0] = after1[0];
-                    indices[i1.mTri * 3 + 1] = after1[1];
-                    indices[i1.mTri * 3 + 2] = after1[2];
-
-                    triLocked[i0.mTri] = 1;
-                    triLocked[i1.mTri] = 1;
-                    anyFlip = true;
-                }
-
-                if (!anyFlip)
-                {
-                    break;
-                }
-
-                RemoveDegenerateAndDuplicateTriangleIndices(indices, vertices, minTriangleArea);
-            }
+        std::unordered_map<uint64_t, std::vector<int>> keptColumnYs;
+        keptColumnYs.reserve(filteredVoxelsOut.size() * 2 + 1);
+        for (const VoxelCoord& v : filteredVoxelsOut)
+        {
+            keptColumnYs[PackXZ(v.mX, v.mZ)].push_back(v.mY);
         }
 
-        const bool doSmooth = (indices.size() / 3) <= 40000;
-        if (doSmooth)
+        const int smoothRadius = 4;
+        smoothedVoxelYOut.reserve(filteredVoxelsOut.size() * 2 + 1);
+
+        for (const VoxelCoord& v : filteredVoxelsOut)
         {
-            std::vector<int32_t> smoothValence;
-            std::vector<uint8_t> smoothBoundary;
-            std::vector<EdgeCandidate> smoothEdges;
-            float avgLenSq = 0.0f;
-            BuildEdgeData(indices, smoothValence, smoothBoundary, smoothEdges, avgLenSq);
-            if (!smoothEdges.empty())
+            double sum = 0.0;
+            double weightSum = 0.0;
+
+            for (int dz = -smoothRadius; dz <= smoothRadius; ++dz)
             {
-                const int smoothPassCount = (indices.size() / 3 <= 25000) ? 2 : 1;
-                for (int smoothPass = 0; smoothPass < smoothPassCount; ++smoothPass)
+                for (int dx = -smoothRadius; dx <= smoothRadius; ++dx)
                 {
-                    std::vector<glm::vec3> neighbourSum(vertices.size(), glm::vec3(0.0f));
-                    std::vector<uint16_t> neighbourCount(vertices.size(), 0);
-                    for (const EdgeCandidate& edge : smoothEdges)
+                    const int nx = v.mX + dx;
+                    const int nz = v.mZ + dz;
+                    const uint64_t colKey = PackXZ(nx, nz);
+                    auto it = keptColumnYs.find(colKey);
+                    if (it == keptColumnYs.end())
                     {
-                        if (edge.a >= vertices.size() || edge.b >= vertices.size())
-                        {
-                            continue;
-                        }
-
-                        neighbourSum[edge.a] += vertices[edge.b];
-                        neighbourSum[edge.b] += vertices[edge.a];
-                        neighbourCount[edge.a]++;
-                        neighbourCount[edge.b]++;
+                        continue;
                     }
 
-                    std::vector<glm::vec3> nextVertices = vertices;
-                    for (uint32_t v = 0; v < vertices.size(); ++v)
+                    int closestY = it->second.front();
+                    int bestDiff = std::abs(closestY - v.mY);
+                    for (int candidateY : it->second)
                     {
-                        if (v >= smoothBoundary.size() || smoothBoundary[v] || neighbourCount[v] < 3)
+                        const int diff = std::abs(candidateY - v.mY);
+                        if (diff < bestDiff)
                         {
-                            continue;
+                            bestDiff = diff;
+                            closestY = candidateY;
                         }
-
-                        glm::vec3 avg = neighbourSum[v] / static_cast<float>(neighbourCount[v]);
-                        nextVertices[v] = vertices[v] * 0.66f + avg * 0.34f;
-                        ClampVertexToBounds(nextVertices[v]);
                     }
 
-                    vertices.swap(nextVertices);
+                    if (bestDiff > stitchYCells)
+                    {
+                        continue;
+                    }
+
+                    if (!HasVoxel(nx, nz, closestY))
+                    {
+                        continue;
+                    }
+
+                    const float dist = std::sqrt(static_cast<float>(dx * dx + dz * dz));
+                    const double weight = 1.0 / (1.0 + static_cast<double>(dist * dist));
+                    sum += static_cast<double>(closestY) * weight;
+                    weightSum += weight;
                 }
             }
+
+            float smoothed = static_cast<float>(v.mY);
+            if (weightSum > 0.0)
+            {
+                smoothed = static_cast<float>(sum / weightSum);
+            }
+
+            const float maxDelta = static_cast<float>(stitchYCells);
+            smoothed = std::clamp(smoothed, static_cast<float>(v.mY) - maxDelta, static_cast<float>(v.mY) + maxDelta);
+            smoothedVoxelYOut.emplace(MakeVoxelKey(v.mX, v.mY, v.mZ), smoothed);
         }
 
-        RemoveDegenerateAndDuplicateTriangleIndices(indices, vertices, minTriangleArea);
-        std::vector<WorkingTriangle> rebuiltTriangles;
-        RebuildWorkingTrianglesFromIndexBuffer(
-            indices,
-            vertices,
-            walkableCos,
-            minTriangleArea,
-            rebuiltTriangles);
-
-        if (rebuiltTriangles.size() >= 2)
+        smoothedYOut.reserve(columnYOut.size() * 2 + 1);
+        for (const auto& entry : columnYOut)
         {
-            trianglesInOut.swap(rebuiltTriangles);
+            const uint64_t key = entry.first;
+            const int y = entry.second;
+            const int x = UnpackX(key);
+            const int z = UnpackZ(key);
+            const uint64_t vkey = MakeVoxelKey(x, y, z);
+
+            auto it = smoothedVoxelYOut.find(vkey);
+            const float smoothed = (it != smoothedVoxelYOut.end())
+                ? it->second
+                : static_cast<float>(y);
+            smoothedYOut.emplace(key, smoothed);
         }
     }
 
-    bool BuildHavokStyleGeometry(
+    bool BuildTopFaceFallback(
+        const std::unordered_map<uint64_t, int>& columnY,
+        const std::unordered_map<uint64_t, float>& smoothedY,
+        float minX,
+        float minY,
+        float minZ,
+        float cs,
+        float ch,
+        std::vector<glm::vec3>& verticesOut,
+        std::vector<uint32_t>& indicesOut)
+    {
+        verticesOut.clear();
+        indicesOut.clear();
+
+        const bool hasSmoothed = !smoothedY.empty();
+        if (!hasSmoothed && columnY.empty())
+        {
+            return false;
+        }
+
+        const size_t columnCount = hasSmoothed ? smoothedY.size() : columnY.size();
+        verticesOut.reserve(columnCount * 4);
+        indicesOut.reserve(columnCount * 6);
+
+        auto UnpackX = [](uint64_t key) -> int
+            {
+                return static_cast<int>(static_cast<uint32_t>(key >> 32));
+            };
+        auto UnpackZ = [](uint64_t key) -> int
+            {
+                return static_cast<int>(static_cast<uint32_t>(key & 0xffffffffu));
+            };
+
+        auto emitQuad = [&](int x, int z, float y)
+            {
+                const float x0 = minX + static_cast<float>(x) * cs;
+                const float z0 = minZ + static_cast<float>(z) * cs;
+                const float x1 = x0 + cs;
+                const float z1 = z0 + cs;
+                const float yTop = minY + (y + 1.0f) * ch;
+
+                const uint32_t base = static_cast<uint32_t>(verticesOut.size());
+                verticesOut.emplace_back(x0, yTop, z0);
+                verticesOut.emplace_back(x1, yTop, z0);
+                verticesOut.emplace_back(x1, yTop, z1);
+                verticesOut.emplace_back(x0, yTop, z1);
+
+                indicesOut.push_back(base + 0);
+                indicesOut.push_back(base + 1);
+                indicesOut.push_back(base + 2);
+                indicesOut.push_back(base + 0);
+                indicesOut.push_back(base + 2);
+                indicesOut.push_back(base + 3);
+            };
+
+        if (hasSmoothed)
+        {
+            for (const auto& entry : smoothedY)
+            {
+                emitQuad(UnpackX(entry.first), UnpackZ(entry.first), entry.second);
+            }
+        }
+        else
+        {
+            for (const auto& entry : columnY)
+            {
+                emitQuad(UnpackX(entry.first), UnpackZ(entry.first), static_cast<float>(entry.second));
+            }
+        }
+
+        if (verticesOut.empty() || indicesOut.empty())
+        {
+            return false;
+        }
+
+        if (!WeldRawMeshExact(verticesOut, indicesOut))
+        {
+            RemoveDegenerateAndDuplicateTriangles(verticesOut, indicesOut);
+            return !verticesOut.empty() && !indicesOut.empty();
+        }
+
+        return true;
+    }
+
+    bool TriangulateVoxelGraph(
+        const std::vector<VoxelCoord>& voxels,
+        const std::unordered_map<uint64_t, int>& columnY,
+        const std::unordered_map<uint64_t, float>& smoothedY,
+        const std::unordered_map<uint64_t, float>& smoothedVoxelY,
+        float minX,
+        float minY,
+        float minZ,
+        float maxX,
+        float maxZ,
+        float cs,
+        float ch,
+        int maxDeltaY,
+        int nx,
+        int nz,
+        std::vector<glm::vec3>& verticesOut,
+        std::vector<uint32_t>& indicesOut)
+    {
+        verticesOut.clear();
+        indicesOut.clear();
+
+        if (voxels.empty())
+        {
+            return false;
+        }
+
+        auto PackXZ = [](int x, int z) -> uint64_t
+            {
+                return (static_cast<uint64_t>(static_cast<uint32_t>(x)) << 32) |
+                    static_cast<uint64_t>(static_cast<uint32_t>(z));
+            };
+        struct VoxelEntry
+        {
+            int mX = 0;
+            int mY = 0;
+            int mZ = 0;
+            float mYConnect = 0.0f;
+            uint32_t mVertexIndex = 0;
+        };
+
+        std::vector<VoxelEntry> entries;
+        entries.reserve(voxels.size());
+
+        std::unordered_map<uint64_t, std::vector<size_t>> columnMap;
+        columnMap.reserve(voxels.size() * 2 + 1);
+
+        verticesOut.reserve(voxels.size());
+
+        for (const VoxelCoord& v : voxels)
+        {
+            const uint64_t key = PackXZ(v.mX, v.mZ);
+            float yConnect = static_cast<float>(v.mY);
+            const uint64_t vkey = MakeVoxelKey(v.mX, v.mY, v.mZ);
+            auto itSmooth = smoothedVoxelY.find(vkey);
+            if (itSmooth != smoothedVoxelY.end())
+            {
+                yConnect = itSmooth->second;
+            }
+
+            float cx = minX + (static_cast<float>(v.mX) + 0.5f) * cs;
+            const float cy = minY + (yConnect + 0.5f) * ch;
+            float cz = minZ + (static_cast<float>(v.mZ) + 0.5f) * cs;
+
+            if (nx > 1)
+            {
+                if (v.mX == 0)
+                {
+                    cx = minX;
+                }
+                else if (v.mX == nx - 1)
+                {
+                    cx = maxX;
+                }
+            }
+
+            if (nz > 1)
+            {
+                if (v.mZ == 0)
+                {
+                    cz = minZ;
+                }
+                else if (v.mZ == nz - 1)
+                {
+                    cz = maxZ;
+                }
+            }
+
+            const uint32_t vertexIndex = static_cast<uint32_t>(verticesOut.size());
+            verticesOut.emplace_back(cx, cy, cz);
+
+            const size_t entryIndex = entries.size();
+            entries.push_back(VoxelEntry{ v.mX, v.mY, v.mZ, yConnect, vertexIndex });
+            columnMap[key].push_back(entryIndex);
+        }
+
+        if (entries.empty())
+        {
+            return false;
+        }
+
+        const float connectThreshold = static_cast<float>(std::max(1, maxDeltaY));
+        auto CanConnect = [&](float y0, float y1) -> bool
+            {
+                return std::abs(y0 - y1) <= connectThreshold;
+            };
+
+        auto FindClosestInColumn = [&](const std::vector<size_t>& column, float targetY, size_t& outIndex) -> bool
+            {
+                bool found = false;
+                float bestDiff = connectThreshold + 1.0f;
+                for (size_t idx : column)
+                {
+                    const float y = entries[idx].mYConnect;
+                    const float diff = std::abs(y - targetY);
+                    if (diff <= connectThreshold && diff < bestDiff)
+                    {
+                        bestDiff = diff;
+                        outIndex = idx;
+                        found = true;
+                    }
+                }
+                return found;
+            };
+
+        std::vector<uint8_t> used(entries.size(), 0u);
+        indicesOut.reserve(entries.size() * 6);
+
+        for (size_t i = 0; i < entries.size(); ++i)
+        {
+            const VoxelEntry& v = entries[i];
+
+            auto it10Col = columnMap.find(PackXZ(v.mX + 1, v.mZ));
+            auto it01Col = columnMap.find(PackXZ(v.mX, v.mZ + 1));
+            if (it10Col == columnMap.end() || it01Col == columnMap.end())
+            {
+                continue;
+            }
+
+            size_t idx10 = 0;
+            size_t idx01 = 0;
+            if (!FindClosestInColumn(it10Col->second, v.mYConnect, idx10) ||
+                !FindClosestInColumn(it01Col->second, v.mYConnect, idx01))
+            {
+                continue;
+            }
+
+            const float y00 = v.mYConnect;
+            const float y10 = entries[idx10].mYConnect;
+            const float y01 = entries[idx01].mYConnect;
+
+            if (!CanConnect(y00, y10) || !CanConnect(y00, y01) || !CanConnect(y10, y01))
+            {
+                continue;
+            }
+
+            indicesOut.push_back(v.mVertexIndex);
+            indicesOut.push_back(entries[idx10].mVertexIndex);
+            indicesOut.push_back(entries[idx01].mVertexIndex);
+
+            used[i] = 1u;
+            used[idx10] = 1u;
+            used[idx01] = 1u;
+
+            auto it11Col = columnMap.find(PackXZ(v.mX + 1, v.mZ + 1));
+            if (it11Col == columnMap.end())
+            {
+                continue;
+            }
+
+            const float targetDiag = 0.5f * (y10 + y01);
+            size_t idx11 = 0;
+            if (!FindClosestInColumn(it11Col->second, targetDiag, idx11))
+            {
+                continue;
+            }
+
+            const float y11 = entries[idx11].mYConnect;
+            if (!CanConnect(y10, y11) || !CanConnect(y11, y01) || !CanConnect(y10, y01))
+            {
+                continue;
+            }
+
+            indicesOut.push_back(entries[idx10].mVertexIndex);
+            indicesOut.push_back(entries[idx11].mVertexIndex);
+            indicesOut.push_back(entries[idx01].mVertexIndex);
+
+            used[idx10] = 1u;
+            used[idx11] = 1u;
+            used[idx01] = 1u;
+        }
+
+        auto EmitVoxelQuad = [&](const VoxelEntry& v)
+            {
+                float x0 = minX + static_cast<float>(v.mX) * cs;
+                float z0 = minZ + static_cast<float>(v.mZ) * cs;
+                float x1 = x0 + cs;
+                float z1 = z0 + cs;
+                const float yTop = minY + (static_cast<float>(v.mY) + 1.0f) * ch;
+
+                if (nx > 1 && v.mX == nx - 1)
+                {
+                    x1 = maxX;
+                }
+                if (nz > 1 && v.mZ == nz - 1)
+                {
+                    z1 = maxZ;
+                }
+
+                const uint32_t base = static_cast<uint32_t>(verticesOut.size());
+                verticesOut.emplace_back(x0, yTop, z0);
+                verticesOut.emplace_back(x1, yTop, z0);
+                verticesOut.emplace_back(x1, yTop, z1);
+                verticesOut.emplace_back(x0, yTop, z1);
+
+                indicesOut.push_back(base + 0);
+                indicesOut.push_back(base + 1);
+                indicesOut.push_back(base + 2);
+                indicesOut.push_back(base + 0);
+                indicesOut.push_back(base + 2);
+                indicesOut.push_back(base + 3);
+            };
+
+        for (size_t i = 0; i < entries.size(); ++i)
+        {
+            if (used[i])
+            {
+                continue;
+            }
+
+            EmitVoxelQuad(entries[i]);
+        }
+
+        RemoveDegenerateAndDuplicateTriangles(verticesOut, indicesOut);
+        if (!verticesOut.empty() && !indicesOut.empty())
+        {
+            return true;
+        }
+
+        return BuildTopFaceFallback(columnY, smoothedY, minX, minY, minZ, cs, ch, verticesOut, indicesOut);
+    }
+
+    bool BuildVoxelPipeline(
         const float* inputVertices,
         int inputVertexCount,
         const int* inputIndices,
@@ -1888,683 +2260,210 @@ namespace
         outVertices.clear();
         outTriangles.clear();
 
-        if (inputVertices == nullptr || inputIndices == nullptr || inputVertexCount <= 0 || inputIndexCount < 3)
+        const float cs = std::max(1e-4f, config.cs);
+        const float ch = std::max(1e-4f, config.ch);
+        const float slopeAngle = std::clamp(config.walkableSlopeAngle, 0.0f, 89.9f);
+        const float walkableCos = std::cos(slopeAngle * DEG_TO_RAD);
+
+        std::vector<glm::vec3> filteredVertices;
+        std::vector<uint32_t> filteredIndices;
+        if (!FilterTrianglesBySlope(
+                inputVertices,
+                inputVertexCount,
+                inputIndices,
+                inputIndexCount,
+                walkableCos,
+                useForcedXZBounds,
+                forcedMinX,
+                forcedMaxX,
+                forcedMinZ,
+                forcedMaxZ,
+                cs,
+                filteredVertices,
+                filteredIndices))
         {
+            application::util::Logger::Error("PhiveNavMesh", "Simple navmesh build aborted: no triangles left after slope filtering");
             return false;
         }
 
-        const float cellSize = std::max(1e-4f, config.cs);
-        const float cellHeight = std::max(1e-4f, config.ch);
-        const float weldStep = std::max(1e-4f, std::min(cellSize * 0.125f, 0.05f));
-        const float boundarySnapTolerance = std::max(cellSize * 0.6f, weldStep * 2.0f);
-        const float walkableCos = std::cos(config.walkableSlopeAngle * DEG_TO_RAD);
-        const float minTriangleArea = std::max(1e-7f, cellSize * cellSize * 1e-4f);
-        const float coveredSurfaceDistanceLimit = std::max(2.0f, static_cast<float>(config.walkableHeight) * cellHeight);
-        const SimplificationSettings simplificationSettings{
-            config.enableSimplification,
-            config.simplificationTargetRatio,
-            config.simplificationMaxError,
-        };
-
-        std::vector<int32_t> sourceToWelded(static_cast<size_t>(inputVertexCount), -1);
-        std::vector<glm::vec3> weldedVertices;
-        weldedVertices.reserve(static_cast<size_t>(inputVertexCount));
-
-        std::unordered_map<VertexKey, uint32_t, VertexKeyHash> weldedMap;
-        weldedMap.reserve(static_cast<size_t>(inputVertexCount));
-
-        for (int32_t i = 0; i < inputVertexCount; ++i)
+        if (config.enableSimplification)
         {
-            glm::vec3 vertex(
-                inputVertices[i * 3 + 0],
-                inputVertices[i * 3 + 1],
-                inputVertices[i * 3 + 2]);
-
-            if (!IsFiniteVec3(vertex))
+            if (!SimplifyRawMeshByRatioWithOptions(
+                    filteredVertices,
+                    filteredIndices,
+                    config.simplificationTargetRatio,
+                    config.simplificationMaxError,
+                    meshopt_SimplifyLockBorder))
             {
-                continue;
-            }
-
-            if (useForcedXZBounds)
-            {
-                vertex.x = SnapToBoundary(vertex.x, forcedMinX, forcedMaxX, boundarySnapTolerance);
-                vertex.z = SnapToBoundary(vertex.z, forcedMinZ, forcedMaxZ, boundarySnapTolerance);
-                vertex.x = ClampToRange(vertex.x, forcedMinX, forcedMaxX);
-                vertex.z = ClampToRange(vertex.z, forcedMinZ, forcedMaxZ);
-            }
-
-            vertex.x = static_cast<float>(QuantizeToInt(vertex.x, weldStep)) * weldStep;
-            vertex.y = static_cast<float>(QuantizeToInt(vertex.y, weldStep)) * weldStep;
-            vertex.z = static_cast<float>(QuantizeToInt(vertex.z, weldStep)) * weldStep;
-
-            const VertexKey key{
-                static_cast<int64_t>(QuantizeToInt(vertex.x, weldStep)),
-                static_cast<int64_t>(QuantizeToInt(vertex.y, weldStep)),
-                static_cast<int64_t>(QuantizeToInt(vertex.z, weldStep)),
-            };
-
-            auto existing = weldedMap.find(key);
-            if (existing != weldedMap.end())
-            {
-                sourceToWelded[static_cast<size_t>(i)] = static_cast<int32_t>(existing->second);
-                continue;
-            }
-
-            const uint32_t newIndex = static_cast<uint32_t>(weldedVertices.size());
-            weldedVertices.push_back(vertex);
-            weldedMap.emplace(key, newIndex);
-            sourceToWelded[static_cast<size_t>(i)] = static_cast<int32_t>(newIndex);
-        }
-
-        if (weldedVertices.empty())
-        {
-            return false;
-        }
-
-        std::vector<int32_t> woundInputIndices;
-        NormalizeInputTriangleWinding(
-            inputVertices,
-            inputVertexCount,
-            inputIndices,
-            inputIndexCount,
-            woundInputIndices);
-        if (woundInputIndices.empty())
-        {
-            return false;
-        }
-
-        std::vector<WorkingTriangle> workingTriangles;
-        workingTriangles.reserve(static_cast<size_t>(woundInputIndices.size() / 3));
-
-        std::unordered_set<TriangleKey, TriangleKeyHash> seenInputTriangles;
-        seenInputTriangles.reserve(static_cast<size_t>(woundInputIndices.size() / 3));
-
-        for (size_t tri = 0; tri + 2 < woundInputIndices.size(); tri += 3)
-        {
-            const int32_t ia = woundInputIndices[tri + 0];
-            const int32_t ib = woundInputIndices[tri + 1];
-            const int32_t ic = woundInputIndices[tri + 2];
-
-            if (ia < 0 || ib < 0 || ic < 0 || ia >= inputVertexCount || ib >= inputVertexCount || ic >= inputVertexCount)
-            {
-                continue;
-            }
-
-            const int32_t mappedA = sourceToWelded[static_cast<size_t>(ia)];
-            const int32_t mappedB = sourceToWelded[static_cast<size_t>(ib)];
-            const int32_t mappedC = sourceToWelded[static_cast<size_t>(ic)];
-            if (mappedA < 0 || mappedB < 0 || mappedC < 0)
-            {
-                continue;
-            }
-
-            uint32_t a = static_cast<uint32_t>(mappedA);
-            uint32_t b = static_cast<uint32_t>(mappedB);
-            uint32_t c = static_cast<uint32_t>(mappedC);
-
-            if (a >= weldedVertices.size() || b >= weldedVertices.size() || c >= weldedVertices.size())
-            {
-                continue;
-            }
-
-            if (a == b || b == c || c == a)
-            {
-                continue;
-            }
-
-            const glm::vec3& va = weldedVertices[a];
-            const glm::vec3& vb = weldedVertices[b];
-            const glm::vec3& vc = weldedVertices[c];
-
-            glm::vec3 cross = glm::cross(vb - va, vc - va);
-            const float crossLength = glm::length(cross);
-            if (crossLength <= 1e-8f)
-            {
-                continue;
-            }
-
-            const float area = crossLength * 0.5f;
-            if (area <= minTriangleArea)
-            {
-                continue;
-            }
-
-            glm::vec3 normal = cross / crossLength;
-            if (std::fabs(normal.y) < walkableCos)
-            {
-                continue;
-            }
-
-            if (cross.y < 0.0f)
-            {
-                std::swap(b, c);
-                normal = -normal;
-            }
-            if (normal.y < 0.0f)
-            {
-                normal = -normal;
-            }
-
-            const TriangleKey triangleKey = MakeTriangleKey(a, b, c);
-            if (!seenInputTriangles.insert(triangleKey).second)
-            {
-                continue;
-            }
-
-            WorkingTriangle triangle;
-            triangle.mVertices[0] = a;
-            triangle.mVertices[1] = b;
-            triangle.mVertices[2] = c;
-            triangle.mNormal = normal;
-            triangle.mArea = area;
-            workingTriangles.push_back(triangle);
-        }
-
-        if (workingTriangles.empty())
-        {
-            return false;
-        }
-
-        RemoveCoveredLowerSurfaces(weldedVertices, cellSize, cellHeight, coveredSurfaceDistanceLimit, workingTriangles);
-        RemoveOverlappingWalkableSurfaces(weldedVertices, cellSize, cellHeight, workingTriangles);
-        if (workingTriangles.empty())
-        {
-            return false;
-        }
-
-        std::vector<std::vector<uint32_t>> faceAdjacency(workingTriangles.size());
-        std::unordered_map<UndirectedEdgeKey, std::vector<uint32_t>, UndirectedEdgeKeyHash> edgeToFaces;
-        edgeToFaces.reserve(workingTriangles.size() * 2);
-
-        for (uint32_t faceIndex = 0; faceIndex < workingTriangles.size(); ++faceIndex)
-        {
-            const WorkingTriangle& face = workingTriangles[faceIndex];
-            edgeToFaces[MakeUndirectedEdgeKey(face.mVertices[0], face.mVertices[1])].push_back(faceIndex);
-            edgeToFaces[MakeUndirectedEdgeKey(face.mVertices[1], face.mVertices[2])].push_back(faceIndex);
-            edgeToFaces[MakeUndirectedEdgeKey(face.mVertices[2], face.mVertices[0])].push_back(faceIndex);
-        }
-
-        for (const auto& edgeFacesPair : edgeToFaces)
-        {
-            const std::vector<uint32_t>& faces = edgeFacesPair.second;
-            for (size_t i = 0; i < faces.size(); ++i)
-            {
-                for (size_t j = i + 1; j < faces.size(); ++j)
-                {
-                    const uint32_t a = faces[i];
-                    const uint32_t b = faces[j];
-                    faceAdjacency[a].push_back(b);
-                    faceAdjacency[b].push_back(a);
-                }
-            }
-        }
-
-        const float thresholdArea = std::max(0.0f, static_cast<float>(config.minRegionArea) * cellSize * cellSize);
-        if (thresholdArea > 0.0f && workingTriangles.size() > 1)
-        {
-            std::vector<uint8_t> visited(workingTriangles.size(), 0);
-            struct RegionInfo
-            {
-                float mArea = 0.0f;
-                std::vector<uint32_t> mFaces;
-            };
-
-            std::vector<RegionInfo> regions;
-
-            for (uint32_t seedFace = 0; seedFace < workingTriangles.size(); ++seedFace)
-            {
-                if (visited[seedFace])
-                {
-                    continue;
-                }
-
-                RegionInfo region;
-                std::queue<uint32_t> queue;
-                queue.push(seedFace);
-                visited[seedFace] = 1;
-
-                while (!queue.empty())
-                {
-                    const uint32_t faceIndex = queue.front();
-                    queue.pop();
-
-                    region.mFaces.push_back(faceIndex);
-                    region.mArea += workingTriangles[faceIndex].mArea;
-
-                    for (uint32_t neighbour : faceAdjacency[faceIndex])
-                    {
-                        if (visited[neighbour])
-                        {
-                            continue;
-                        }
-
-                        visited[neighbour] = 1;
-                        queue.push(neighbour);
-                    }
-                }
-
-                regions.push_back(std::move(region));
-            }
-
-            size_t largestRegionIndex = 0;
-            float largestRegionArea = -1.0f;
-            for (size_t i = 0; i < regions.size(); ++i)
-            {
-                if (regions[i].mArea > largestRegionArea)
-                {
-                    largestRegionArea = regions[i].mArea;
-                    largestRegionIndex = i;
-                }
-            }
-
-            std::vector<uint8_t> keepFace(workingTriangles.size(), 0);
-            for (size_t i = 0; i < regions.size(); ++i)
-            {
-                const bool keepRegion = (regions[i].mArea >= thresholdArea) || (i == largestRegionIndex);
-                if (!keepRegion)
-                {
-                    continue;
-                }
-
-                for (uint32_t faceIndex : regions[i].mFaces)
-                {
-                    keepFace[faceIndex] = 1;
-                }
-            }
-
-            std::vector<WorkingTriangle> filteredTriangles;
-            filteredTriangles.reserve(workingTriangles.size());
-            for (size_t i = 0; i < workingTriangles.size(); ++i)
-            {
-                if (keepFace[i])
-                {
-                    filteredTriangles.push_back(workingTriangles[i]);
-                }
-            }
-
-            workingTriangles.swap(filteredTriangles);
-            if (workingTriangles.empty())
-            {
+                application::util::Logger::Error("PhiveNavMesh", "Simple navmesh build aborted: border-locked simplification failed");
                 return false;
             }
         }
 
-        TrySimplifyWorkingTriangles(
-            weldedVertices,
-            simplificationSettings,
-            walkableCos,
-            minTriangleArea,
+        std::vector<VoxelCoord> voxels;
+        std::unordered_set<uint64_t> voxelSet;
+        float minX = 0.0f;
+        float minY = 0.0f;
+        float minZ = 0.0f;
+        int nx = 0;
+        int ny = 0;
+        int nz = 0;
+        if (!VoxelizeGeometry(
+                filteredVertices,
+                filteredIndices,
+                cs,
+                ch,
+                useForcedXZBounds,
+                forcedMinX,
+                forcedMaxX,
+                forcedMinZ,
+                forcedMaxZ,
+                voxels,
+                voxelSet,
+                minX,
+                minY,
+                minZ,
+                nx,
+                ny,
+                nz))
+        {
+            application::util::Logger::Error("PhiveNavMesh", "Simple navmesh build aborted: voxelization produced no voxels");
+            return false;
+        }
+
+        const float maxX = useForcedXZBounds ? forcedMaxX : (minX + static_cast<float>(nx) * cs);
+        const float maxZ = useForcedXZBounds ? forcedMaxZ : (minZ + static_cast<float>(nz) * cs);
+
+        const int stitchYCells = std::max(1, static_cast<int>(std::lround(1.0 / static_cast<double>(ch))));
+        const float minLayerSeparationWorld = 2.0f;
+        std::vector<VoxelCoord> walkableVoxels;
+        std::unordered_set<uint64_t> walkableSet;
+        std::unordered_map<uint64_t, int> columnY;
+        std::unordered_map<uint64_t, float> smoothedY;
+        std::unordered_map<uint64_t, float> smoothedVoxelY;
+        FilterWalkableVoxelsAndSmooth(
+            voxels,
+            voxelSet,
+            walkableVoxels,
+            walkableSet,
+            columnY,
+            smoothedY,
+            smoothedVoxelY,
+            minLayerSeparationWorld,
+            ch,
+            stitchYCells);
+
+        if (walkableVoxels.empty())
+        {
+            application::util::Logger::Error("PhiveNavMesh", "Simple navmesh build aborted: no walkable voxels after filtering");
+            return false;
+        }
+
+        std::vector<glm::vec3> voxelVertices;
+        std::vector<uint32_t> voxelIndices;
+        if (!TriangulateVoxelGraph(
+                walkableVoxels,
+                columnY,
+                smoothedY,
+                smoothedVoxelY,
+                minX,
+                minY,
+                minZ,
+                maxX,
+                maxZ,
+                cs,
+                ch,
+                std::max(1, stitchYCells * 2),
+                nx,
+                nz,
+                voxelVertices,
+                voxelIndices))
+        {
+            application::util::Logger::Error("PhiveNavMesh", "Simple navmesh build aborted: voxel triangulation produced no geometry");
+            return false;
+        }
+
+        const float borderSnapTolerance = std::max(cs * 0.6f, 0.02f);
+        SnapVerticesToBounds(voxelVertices, minX, maxX, minZ, maxZ, borderSnapTolerance);
+
+        std::vector<uint8_t> fixedMask(voxelVertices.size(), 0u);
+        for (size_t i = 0; i < voxelVertices.size(); ++i)
+        {
+            const glm::vec3& v = voxelVertices[i];
+            if (v.x <= minX + borderSnapTolerance || v.x >= maxX - borderSnapTolerance ||
+                v.z <= minZ + borderSnapTolerance || v.z >= maxZ - borderSnapTolerance)
+            {
+                fixedMask[i] = 1u;
+            }
+        }
+
+        SmoothRawMeshLaplacian(voxelVertices, voxelIndices, 20, 0.75f, &fixedMask);
+
+        constexpr int borderBandCells = 3;
+        const float borderBandWorld = std::max(cs, static_cast<float>(borderBandCells) * cs);
+        const float minTriangleArea = cs * cs * 0.03f;
+        const float minBatchExtent = cs * 2.5f;
+
+        if (config.enableSimplification)
+        {
+            // Push interior simplification harder while still bounding triangle size to keep topology readable.
+            const float interiorRatio = std::min(config.simplificationTargetRatio, 0.005f);
+            const float interiorError = std::max(config.simplificationMaxError, cs * 20.0f);
+            const float interiorMaxTriangleArea = std::max(cs * cs * 12.0f, 1e-6f);
+            if (!SimplifyInteriorRegion(
+                    voxelVertices,
+                    voxelIndices,
+                    minX,
+                    maxX,
+                    minZ,
+                    maxZ,
+                    borderBandWorld,
+                    interiorRatio,
+                    interiorError,
+                    interiorMaxTriangleArea))
+            {
+                application::util::Logger::Error("PhiveNavMesh", "Simple navmesh build aborted: interior simplification failed");
+                return false;
+            }
+        }
+
+        if (!SimplifyRawMeshToPackedLimits(voxelVertices, voxelIndices, std::max(1e-4f, config.simplificationMaxError)))
+        {
+            application::util::Logger::Error("PhiveNavMesh", "Simple navmesh build aborted: unable to fit packed limits after final simplification");
+            return false;
+        }
+
+        if (!CullSmallTrianglesAndBatches(
+                voxelVertices,
+                voxelIndices,
+                minTriangleArea,
+                minBatchExtent,
+                minX,
+                maxX,
+                minZ,
+                maxZ,
+                borderBandWorld))
+        {
+            application::util::Logger::Error("PhiveNavMesh", "Simple navmesh build aborted: small batch cull removed all geometry");
+            return false;
+        }
+
+        SnapVerticesToBounds(voxelVertices, minX, maxX, minZ, maxZ, borderSnapTolerance);
+
+        return QuantizeAndBuildOutput(
+            voxelVertices,
+            voxelIndices,
+            cs,
+            ch,
             useForcedXZBounds,
             forcedMinX,
             forcedMaxX,
             forcedMinZ,
             forcedMaxZ,
-            workingTriangles);
-
-        RemoveCoveredLowerSurfaces(weldedVertices, cellSize, cellHeight, coveredSurfaceDistanceLimit, workingTriangles);
-        RemoveOverlappingWalkableSurfaces(weldedVertices, cellSize, cellHeight, workingTriangles);
-        if (workingTriangles.empty())
-        {
-            return false;
-        }
-
-        std::vector<uint8_t> isVertexUsed(weldedVertices.size(), 0);
-        for (const WorkingTriangle& face : workingTriangles)
-        {
-            isVertexUsed[face.mVertices[0]] = 1;
-            isVertexUsed[face.mVertices[1]] = 1;
-            isVertexUsed[face.mVertices[2]] = 1;
-        }
-
-        std::vector<uint32_t> weldedToCompact(weldedVertices.size(), std::numeric_limits<uint32_t>::max());
-        std::vector<glm::vec3> compactVertices;
-        compactVertices.reserve(weldedVertices.size());
-
-        for (uint32_t i = 0; i < weldedVertices.size(); ++i)
-        {
-            if (!isVertexUsed[i])
-            {
-                continue;
-            }
-
-            weldedToCompact[i] = static_cast<uint32_t>(compactVertices.size());
-            compactVertices.push_back(weldedVertices[i]);
-        }
-
-        for (WorkingTriangle& face : workingTriangles)
-        {
-            face.mVertices[0] = weldedToCompact[face.mVertices[0]];
-            face.mVertices[1] = weldedToCompact[face.mVertices[1]];
-            face.mVertices[2] = weldedToCompact[face.mVertices[2]];
-        }
-
-        if (compactVertices.empty())
-        {
-            return false;
-        }
-
-        outBoundsMin[0] = compactVertices[0].x;
-        outBoundsMin[1] = compactVertices[0].y;
-        outBoundsMin[2] = compactVertices[0].z;
-        outBoundsMax[0] = compactVertices[0].x;
-        outBoundsMax[1] = compactVertices[0].y;
-        outBoundsMax[2] = compactVertices[0].z;
-
-        for (const glm::vec3& vertex : compactVertices)
-        {
-            outBoundsMin[0] = std::min(outBoundsMin[0], vertex.x);
-            outBoundsMin[1] = std::min(outBoundsMin[1], vertex.y);
-            outBoundsMin[2] = std::min(outBoundsMin[2], vertex.z);
-            outBoundsMax[0] = std::max(outBoundsMax[0], vertex.x);
-            outBoundsMax[1] = std::max(outBoundsMax[1], vertex.y);
-            outBoundsMax[2] = std::max(outBoundsMax[2], vertex.z);
-        }
-
-        if (useForcedXZBounds)
-        {
-            outBoundsMin[0] = forcedMinX;
-            outBoundsMax[0] = forcedMaxX;
-            outBoundsMin[2] = forcedMinZ;
-            outBoundsMax[2] = forcedMaxZ;
-        }
-
-        if (outBoundsMax[1] - outBoundsMin[1] < cellHeight)
-        {
-            outBoundsMax[1] = outBoundsMin[1] + cellHeight;
-        }
-
-        std::vector<QuantizedVertexKey> quantizedVertices(compactVertices.size());
-        for (size_t i = 0; i < compactVertices.size(); ++i)
-        {
-            glm::vec3 vertex = compactVertices[i];
-
-            if (useForcedXZBounds)
-            {
-                vertex.x = SnapToBoundary(vertex.x, forcedMinX, forcedMaxX, boundarySnapTolerance);
-                vertex.z = SnapToBoundary(vertex.z, forcedMinZ, forcedMaxZ, boundarySnapTolerance);
-                vertex.x = ClampToRange(vertex.x, forcedMinX, forcedMaxX);
-                vertex.z = ClampToRange(vertex.z, forcedMinZ, forcedMaxZ);
-            }
-
-            int32_t qx = static_cast<int32_t>(std::llround((vertex.x - outBoundsMin[0]) / cellSize));
-            const int32_t qy = static_cast<int32_t>(std::llround((vertex.y - outBoundsMin[1]) / cellHeight));
-            int32_t qz = static_cast<int32_t>(std::llround((vertex.z - outBoundsMin[2]) / cellSize));
-
-            if (useForcedXZBounds)
-            {
-                const int32_t maxQX = std::max(0, static_cast<int32_t>(std::floor((forcedMaxX - forcedMinX) / cellSize + 1e-5f)));
-                const int32_t maxQZ = std::max(0, static_cast<int32_t>(std::floor((forcedMaxZ - forcedMinZ) / cellSize + 1e-5f)));
-                qx = std::clamp(qx, 0, maxQX);
-                qz = std::clamp(qz, 0, maxQZ);
-            }
-
-            quantizedVertices[i] = QuantizedVertexKey{ ClampToU16(qx), ClampToU16(qy), ClampToU16(qz) };
-        }
-
-        std::unordered_map<QuantizedVertexKey, uint32_t, QuantizedVertexKeyHash> quantizedMap;
-        quantizedMap.reserve(quantizedVertices.size());
-
-        std::vector<QuantizedVertexKey> compactQuantizedVertices;
-        compactQuantizedVertices.reserve(quantizedVertices.size());
-        std::vector<uint32_t> quantizedRemap(quantizedVertices.size(), 0);
-
-        for (uint32_t i = 0; i < quantizedVertices.size(); ++i)
-        {
-            const QuantizedVertexKey& key = quantizedVertices[i];
-            auto existing = quantizedMap.find(key);
-            if (existing != quantizedMap.end())
-            {
-                quantizedRemap[i] = existing->second;
-                continue;
-            }
-
-            const uint32_t newIndex = static_cast<uint32_t>(compactQuantizedVertices.size());
-            compactQuantizedVertices.push_back(key);
-            quantizedMap.emplace(key, newIndex);
-            quantizedRemap[i] = newIndex;
-        }
-
-        std::vector<WorkingTriangle> quantizedTriangles;
-        quantizedTriangles.reserve(workingTriangles.size());
-        std::unordered_set<TriangleKey, TriangleKeyHash> seenQuantizedTriangles;
-        seenQuantizedTriangles.reserve(workingTriangles.size());
-
-        for (WorkingTriangle face : workingTriangles)
-        {
-            uint32_t a = quantizedRemap[face.mVertices[0]];
-            uint32_t b = quantizedRemap[face.mVertices[1]];
-            uint32_t c = quantizedRemap[face.mVertices[2]];
-
-            if (a == b || b == c || c == a)
-            {
-                continue;
-            }
-
-            glm::vec3 va = DequantizeVertex(compactQuantizedVertices[a], outBoundsMin, cellSize, cellHeight);
-            glm::vec3 vb = DequantizeVertex(compactQuantizedVertices[b], outBoundsMin, cellSize, cellHeight);
-            glm::vec3 vc = DequantizeVertex(compactQuantizedVertices[c], outBoundsMin, cellSize, cellHeight);
-
-            glm::vec3 cross = glm::cross(vb - va, vc - va);
-            const float crossLength = glm::length(cross);
-            if (crossLength <= 1e-8f)
-            {
-                continue;
-            }
-
-            const float area = crossLength * 0.5f;
-            if (area <= minTriangleArea)
-            {
-                continue;
-            }
-
-            glm::vec3 normal = cross / crossLength;
-            if (std::fabs(normal.y) < walkableCos)
-            {
-                continue;
-            }
-
-            if (cross.y < 0.0f)
-            {
-                std::swap(b, c);
-                normal = -normal;
-            }
-            if (normal.y < 0.0f)
-            {
-                normal = -normal;
-            }
-
-            const TriangleKey triangleKey = MakeTriangleKey(a, b, c);
-            if (!seenQuantizedTriangles.insert(triangleKey).second)
-            {
-                continue;
-            }
-
-            face.mVertices[0] = a;
-            face.mVertices[1] = b;
-            face.mVertices[2] = c;
-            face.mNormal = normal;
-            face.mArea = area;
-            quantizedTriangles.push_back(face);
-        }
-
-        if (quantizedTriangles.empty())
-        {
-            return false;
-        }
-
-        std::vector<glm::vec3> dequantizedVertices;
-        dequantizedVertices.reserve(compactQuantizedVertices.size());
-        for (const QuantizedVertexKey& vertex : compactQuantizedVertices)
-        {
-            dequantizedVertices.push_back(DequantizeVertex(vertex, outBoundsMin, cellSize, cellHeight));
-        }
-
-        RemoveCoveredLowerSurfaces(dequantizedVertices, cellSize, cellHeight, coveredSurfaceDistanceLimit, quantizedTriangles);
-        RemoveOverlappingWalkableSurfaces(dequantizedVertices, cellSize, cellHeight, quantizedTriangles);
-        if (quantizedTriangles.empty())
-        {
-            return false;
-        }
-
-        std::vector<uint8_t> finalVertexUsed(compactQuantizedVertices.size(), 0);
-        for (const WorkingTriangle& face : quantizedTriangles)
-        {
-            finalVertexUsed[face.mVertices[0]] = 1;
-            finalVertexUsed[face.mVertices[1]] = 1;
-            finalVertexUsed[face.mVertices[2]] = 1;
-        }
-
-        std::vector<uint32_t> finalRemap(compactQuantizedVertices.size(), std::numeric_limits<uint32_t>::max());
-        std::vector<QuantizedVertexKey> finalVertices;
-        finalVertices.reserve(compactQuantizedVertices.size());
-
-        for (uint32_t i = 0; i < compactQuantizedVertices.size(); ++i)
-        {
-            if (!finalVertexUsed[i])
-            {
-                continue;
-            }
-
-            finalRemap[i] = static_cast<uint32_t>(finalVertices.size());
-            finalVertices.push_back(compactQuantizedVertices[i]);
-        }
-
-        for (WorkingTriangle& face : quantizedTriangles)
-        {
-            face.mVertices[0] = finalRemap[face.mVertices[0]];
-            face.mVertices[1] = finalRemap[face.mVertices[1]];
-            face.mVertices[2] = finalRemap[face.mVertices[2]];
-        }
-
-        std::vector<glm::vec3> faceCentroids(quantizedTriangles.size(), glm::vec3(0.0f));
-        std::vector<glm::vec3> faceNormals(quantizedTriangles.size(), glm::vec3(0.0f));
-
-        for (uint32_t faceIndex = 0; faceIndex < quantizedTriangles.size(); ++faceIndex)
-        {
-            const WorkingTriangle& face = quantizedTriangles[faceIndex];
-            const glm::vec3 va = DequantizeVertex(finalVertices[face.mVertices[0]], outBoundsMin, cellSize, cellHeight);
-            const glm::vec3 vb = DequantizeVertex(finalVertices[face.mVertices[1]], outBoundsMin, cellSize, cellHeight);
-            const glm::vec3 vc = DequantizeVertex(finalVertices[face.mVertices[2]], outBoundsMin, cellSize, cellHeight);
-
-            faceCentroids[faceIndex] = (va + vb + vc) / 3.0f;
-
-            const glm::vec3 cross = glm::cross(vb - va, vc - va);
-            const float crossLength = glm::length(cross);
-            if (crossLength > 1e-8f)
-            {
-                faceNormals[faceIndex] = cross / crossLength;
-            }
-            else
-            {
-                faceNormals[faceIndex] = glm::vec3(0.0f, 1.0f, 0.0f);
-            }
-        }
-
-        std::unordered_map<UndirectedEdgeKey, std::vector<EdgeRef>, UndirectedEdgeKeyHash> edgeBuckets;
-        edgeBuckets.reserve(quantizedTriangles.size() * 2);
-
-        for (uint32_t faceIndex = 0; faceIndex < quantizedTriangles.size(); ++faceIndex)
-        {
-            const WorkingTriangle& face = quantizedTriangles[faceIndex];
-            const uint32_t v0 = face.mVertices[0];
-            const uint32_t v1 = face.mVertices[1];
-            const uint32_t v2 = face.mVertices[2];
-
-            edgeBuckets[MakeUndirectedEdgeKey(v0, v1)].push_back(EdgeRef{ faceIndex, 0, v0, v1 });
-            edgeBuckets[MakeUndirectedEdgeKey(v1, v2)].push_back(EdgeRef{ faceIndex, 1, v1, v2 });
-            edgeBuckets[MakeUndirectedEdgeKey(v2, v0)].push_back(EdgeRef{ faceIndex, 2, v2, v0 });
-        }
-
-        std::vector<uint16_t> oppositeFaces(quantizedTriangles.size() * 3, INVALID_FACE_INDEX);
-
-        for (const auto& bucketPair : edgeBuckets)
-        {
-            const std::vector<EdgeRef>& refs = bucketPair.second;
-            if (refs.size() < 2)
-            {
-                continue;
-            }
-
-            std::vector<uint8_t> used(refs.size(), 0);
-
-            for (size_t i = 0; i < refs.size(); ++i)
-            {
-                if (used[i])
-                {
-                    continue;
-                }
-
-                int bestMatch = -1;
-                float bestScore = -std::numeric_limits<float>::infinity();
-
-                for (size_t j = i + 1; j < refs.size(); ++j)
-                {
-                    if (used[j])
-                    {
-                        continue;
-                    }
-
-                    if (refs[i].mA != refs[j].mB || refs[i].mB != refs[j].mA)
-                    {
-                        continue;
-                    }
-
-                    if (refs[i].mFace == refs[j].mFace)
-                    {
-                        continue;
-                    }
-
-                    const float normalSimilarity = glm::dot(faceNormals[refs[i].mFace], faceNormals[refs[j].mFace]);
-                    const float centroidDeltaY = std::fabs(faceCentroids[refs[i].mFace].y - faceCentroids[refs[j].mFace].y);
-                    const float score = normalSimilarity - centroidDeltaY * 0.05f;
-
-                    if (score > bestScore)
-                    {
-                        bestScore = score;
-                        bestMatch = static_cast<int>(j);
-                    }
-                }
-
-                if (bestMatch < 0)
-                {
-                    continue;
-                }
-
-                used[i] = 1;
-                used[static_cast<size_t>(bestMatch)] = 1;
-
-                const EdgeRef& a = refs[i];
-                const EdgeRef& b = refs[static_cast<size_t>(bestMatch)];
-
-                const uint16_t oppositeFaceForA = (b.mFace <= 0xFFFFu) ? static_cast<uint16_t>(b.mFace) : INVALID_FACE_INDEX;
-                const uint16_t oppositeFaceForB = (a.mFace <= 0xFFFFu) ? static_cast<uint16_t>(a.mFace) : INVALID_FACE_INDEX;
-
-                oppositeFaces[a.mFace * 3 + a.mLocalEdge] = oppositeFaceForA;
-                oppositeFaces[b.mFace * 3 + b.mLocalEdge] = oppositeFaceForB;
-            }
-        }
-
-        outVertices.resize(finalVertices.size() * 3);
-        for (size_t i = 0; i < finalVertices.size(); ++i)
-        {
-            outVertices[i * 3 + 0] = finalVertices[i].mX;
-            outVertices[i * 3 + 1] = finalVertices[i].mY;
-            outVertices[i * 3 + 2] = finalVertices[i].mZ;
-        }
-
-        outTriangles.resize(quantizedTriangles.size() * 6);
-        for (size_t faceIndex = 0; faceIndex < quantizedTriangles.size(); ++faceIndex)
-        {
-            const WorkingTriangle& face = quantizedTriangles[faceIndex];
-            outTriangles[faceIndex * 6 + 0] = static_cast<uint16_t>(face.mVertices[0]);
-            outTriangles[faceIndex * 6 + 1] = static_cast<uint16_t>(face.mVertices[1]);
-            outTriangles[faceIndex * 6 + 2] = static_cast<uint16_t>(face.mVertices[2]);
-            outTriangles[faceIndex * 6 + 3] = oppositeFaces[faceIndex * 3 + 0];
-            outTriangles[faceIndex * 6 + 4] = oppositeFaces[faceIndex * 3 + 1];
-            outTriangles[faceIndex * 6 + 5] = oppositeFaces[faceIndex * 3 + 2];
-        }
-
-        return !outVertices.empty() && !outTriangles.empty();
+            outVertices,
+            outTriangles,
+            outBoundsMin,
+            outBoundsMax);
     }
 }
 
@@ -2574,27 +2473,25 @@ namespace application::file::game::phive::starlight_physics::ai
     {
         mConfig.cs = std::max(1e-4f, config.mCellSize);
         mConfig.ch = std::max(1e-4f, config.mCellHeight);
-        mConfig.walkableSlopeAngle = config.mWalkableSlopeAngle;
-        mConfig.walkableHeight = static_cast<int>(std::ceil(config.mWalkableHeight / mConfig.ch)); //Unused
-        mConfig.walkableClimb = static_cast<int>(std::floor(config.mWalkableClimb / mConfig.ch));  //Unused
-        mConfig.walkableRadius = static_cast<int>(std::ceil(config.mWalkableRadius / mConfig.cs));  //Unused
+        mConfig.walkableSlopeAngle = std::clamp(config.mWalkableSlopeAngle, 0.0f, 89.9f);
+        mConfig.walkableHeight = std::max(1, static_cast<int>(std::ceil(config.mWalkableHeight / mConfig.ch)));
+        mConfig.walkableClimb = std::max(0, static_cast<int>(std::floor(config.mWalkableClimb / mConfig.ch)));
+        mConfig.walkableRadius = std::max(0, static_cast<int>(std::ceil(config.mWalkableRadius / mConfig.cs)));
         mConfig.minRegionArea = std::max(0, config.mMinRegionArea * config.mMinRegionArea);
-        mConfig.mergeRegionArea = std::max(0, config.mMinRegionArea * config.mMinRegionArea * 2);  //Unused
-        mConfig.maxVertsPerPoly = 3;  //Unused
+        mConfig.mergeRegionArea = std::max(mConfig.minRegionArea, mConfig.minRegionArea * 2);
+        mConfig.maxVertsPerPoly = 3;
         mConfig.enableSimplification = config.mEnableSimplification;
-        const float requestedTargetRatio = std::clamp(config.mSimplificationTargetRatio, 0.003f, 1.0f);
-        const float requestedMaxError = std::clamp(config.mSimplificationMaxError, 0.001f, 1.0f);
-        mConfig.simplificationTargetRatio = std::clamp(requestedTargetRatio * 0.72f, 0.003f, 1.0f);
-        mConfig.simplificationMaxError = std::clamp(requestedMaxError * 1.35f, 0.001f, 1.0f);
+        mConfig.simplificationTargetRatio = std::clamp(config.mSimplificationTargetRatio, 0.003f, 1.0f);
+        mConfig.simplificationMaxError = std::clamp(config.mSimplificationMaxError, 0.0f, 100.0f);
     }
 
     void hkaiNavMeshGeometryGenerator::setForcedXZBounds(float minX, float maxX, float minZ, float maxZ)
     {
         mUseForcedXZBounds = true;
-        mForcedMinX = minX;
-        mForcedMaxX = maxX;
-        mForcedMinZ = minZ;
-        mForcedMaxZ = maxZ;
+        mForcedMinX = std::min(minX, maxX);
+        mForcedMaxX = std::max(minX, maxX);
+        mForcedMinZ = std::min(minZ, maxZ);
+        mForcedMaxZ = std::max(minZ, maxZ);
     }
 
     void hkaiNavMeshGeometryGenerator::clearForcedXZBounds()
@@ -2615,7 +2512,7 @@ namespace application::file::game::phive::starlight_physics::ai
         float boundsMin[3] = { 0.0f, 0.0f, 0.0f };
         float boundsMax[3] = { 0.0f, 0.0f, 0.0f };
 
-        if (!BuildHavokStyleGeometry(
+        if (!BuildVoxelPipeline(
                 vertices,
                 verticesCount,
                 indices,
