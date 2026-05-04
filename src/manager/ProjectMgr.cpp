@@ -37,7 +37,7 @@ namespace application::manager
 		if (std::find(gProjects.begin(), gProjects.end(), Name) != gProjects.end())
 			return;
 
-		std::filesystem::create_directory(application::util::FileUtil::GetWorkingDirFilePath("Projects/" + Name));
+		std::filesystem::create_directories(application::util::FileUtil::GetWorkingDirFilePath("Projects/" + Name + "/romfs"));
 
 		gProjects.push_back(Name);
 		SelectProject(Name);

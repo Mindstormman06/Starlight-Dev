@@ -24,7 +24,7 @@ namespace application::util
 	{
 		if (Replaceable && application::manager::ProjectMgr::IsAnyProjectSelected())
 		{
-			const std::string ReplaceablePath = gCurrentDirectory + "/WorkingDir/Projects/" + application::manager::ProjectMgr::gProject + "/" + LocalPath;
+			const std::string ReplaceablePath = gCurrentDirectory + "/WorkingDir/Projects/" + application::manager::ProjectMgr::gProject + "/romfs/" + LocalPath;
 			if (FileExists(ReplaceablePath))
 				return ReplaceablePath;
 		}
@@ -34,7 +34,7 @@ namespace application::util
 
 	std::string FileUtil::GetBfresFilePath(const std::string& Name)
 	{
-		const std::string ReplaceablePath = gCurrentDirectory + "/WorkingDir/Projects/" + application::manager::ProjectMgr::gProject + "/Model/" + Name + ".mc";
+		const std::string ReplaceablePath = gCurrentDirectory + "/WorkingDir/Projects/" + application::manager::ProjectMgr::gProject + "/romfs/Model/" + Name + ".mc";
 		if (FileExists(ReplaceablePath))
 			return ReplaceablePath;
 
@@ -56,10 +56,10 @@ namespace application::util
 		if (!application::manager::ProjectMgr::IsAnyProjectSelected())
 			application::util::Logger::Error("FileUtil", "Tried to get save file path for %s while no project was selected", Path.c_str());
 
-		if(Path.empty())
-			return gCurrentDirectory + "/WorkingDir/Projects/" + application::manager::ProjectMgr::gProject;
+		if (Path.empty())
+			return gCurrentDirectory + "/WorkingDir/Projects/" + application::manager::ProjectMgr::gProject + "/romfs";
 
-		return gCurrentDirectory + "/WorkingDir/Projects/" + application::manager::ProjectMgr::gProject + "/" + Path;
+		return gCurrentDirectory + "/WorkingDir/Projects/" + application::manager::ProjectMgr::gProject + "/romfs/" + Path;
 	}
 
 	bool FileUtil::FileExists(const std::string& Path)
