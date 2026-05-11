@@ -80,9 +80,9 @@ namespace application::file::game::texture
 			}
 
 #if defined(STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT) && STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT
-			const astcenc_error ContextStatus = astcenc_context_alloc(&Config, 1, &Context, nullptr);
+			const astcenc_error ContextStatus = astcenc_context_alloc(&Config, 1u, &Context, nullptr);
 #else
-			const astcenc_error ContextStatus = astcenc_context_alloc(&Config, 1, &Context);
+			const astcenc_error ContextStatus = astcenc_context_alloc(&Config, 1u, &Context);
 #endif
 			if (ContextStatus != ASTCENC_SUCCESS || Context == nullptr)
 			{

@@ -342,13 +342,16 @@ set(ASTCENC_SHAREDLIB ON CACHE BOOL "Enable astcenc builds with core library sha
 set(ASTCENC_CLI OFF CACHE BOOL "Enable build of astcenc command line tools")
 add_subdirectory( libs/astcenc )
 
-# Newer astcencoder adds `parent_context` to astcenc_context_alloc; pick call site at configure time.
+# Newer astcencoder adds `parent_context` to astcenc_context_alloc; detect from header text.
+# (CMake regex MATCH was unreliable across header formatting; substring find is deterministic.)
 file(READ "${CMAKE_SOURCE_DIR}/libs/astcenc/Source/astcenc.h" STARLIGHT_ASTCENC_HEADER_SNIP)
-if(STARLIGHT_ASTCENC_HEADER_SNIP MATCHES "const astcenc_context\\* parent_context\\)")
+string(FIND "${STARLIGHT_ASTCENC_HEADER_SNIP}" "parent_context" _astar_parent_ix)
+if(NOT _astar_parent_ix EQUAL -1)
 	set(STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT TRUE)
 else()
 	set(STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT FALSE)
 endif()
+message(STATUS "astcenc_context_alloc(..., parent): ${STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT}")
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build libgit2 static" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
