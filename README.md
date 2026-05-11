@@ -19,10 +19,6 @@ Starlight is a comprehensive, standalone toolkit designed for **The Legend of Ze
 Starlight can be obtained either by building the project from the source code or by downloading pre-compiled binaries.
 Please make sure to restart Starlight *after* you have specified the paths for the first time.
 
-### Pre-compiled Binaries
-
-For those who prefer to skip the build process or wish to support the ongoing development of Starlight, pre-compiled binaries are available for supporters on [Patreon](https://patreon.com/MrMystery846).
-
 ### Building from Source
 
 **Windows (recommended path)**  
