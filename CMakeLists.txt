@@ -34,7 +34,7 @@ message(STATUS "Git commit: ${STARLIGHT_GIT_COMMIT}")
 
 add_compile_definitions(STARLIGHT_GIT_COMMIT="${STARLIGHT_GIT_COMMIT}")
 
-set(STARLIGHT_APP_VERSION "2.0.0" CACHE STRING "Human-readable Starlight app version")
+set(STARLIGHT_APP_VERSION "2.0.1" CACHE STRING "Human-readable Starlight app version")
 message(STATUS "App version: ${STARLIGHT_APP_VERSION}")
 add_compile_definitions(STARLIGHT_APP_VERSION="${STARLIGHT_APP_VERSION}")
 
