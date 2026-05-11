@@ -13,4 +13,28 @@ if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET Starlight PROPERTY CXX_STANDARD 20)
 endif()
 
-# TODO: Add tests and install targets if needed.
+# Install runtime payload for packaging (portable zip + installer)
+install(TARGETS Starlight
+    RUNTIME DESTINATION .
+    COMPONENT Runtime
+)
+
+install(DIRECTORY "${CMAKE_SOURCE_DIR}/rootDir/Assets"
+    DESTINATION .
+    COMPONENT Runtime
+)
+
+install(FILES
+    "${CMAKE_SOURCE_DIR}/README.md"
+    "${CMAKE_SOURCE_DIR}/LICENSE.txt"
+    DESTINATION .
+    COMPONENT Runtime
+)
+
+# Ensure first-run writable structure exists in packaged builds.
+install(CODE "
+    file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/WorkingDir\")
+    file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/WorkingDir/Cache\")
+    file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/WorkingDir/Projects\")
+    file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/WorkingDir/Templates\")
+" COMPONENT Runtime)
