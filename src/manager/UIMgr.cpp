@@ -661,7 +661,9 @@ namespace application::manager
             ImGui::PopStyleColor();
 
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f));
-            ImGui::Text("PUBLIC BUILD: %s", STARLIGHT_GIT_COMMIT);
+            ImGui::Text("Version: %s", STARLIGHT_APP_VERSION);
+            ImGui::SameLine();
+            ImGui::Text("| Build: %s", STARLIGHT_GIT_COMMIT);
             ImGui::PopStyleColor();
 
             ImGui::EndMainMenuBar();

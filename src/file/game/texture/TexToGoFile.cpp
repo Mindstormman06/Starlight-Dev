@@ -79,7 +79,7 @@ namespace application::file::game::texture
 				return false;
 			}
 
-			const astcenc_error ContextStatus = astcenc_context_alloc(&Config, 1, &Context, nullptr);
+			const astcenc_error ContextStatus = astcenc_context_alloc(&Config, 1, &Context);
 			if (ContextStatus != ASTCENC_SUCCESS || Context == nullptr)
 			{
 				application::util::Logger::Error("TexToGoFile", "ASTC context allocation failed for %s", FileName.c_str());
