@@ -13,6 +13,10 @@ if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET Starlight PROPERTY CXX_STANDARD 20)
 endif()
 
+if(STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT)
+	target_compile_definitions(Starlight PRIVATE STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT=1)
+endif()
+
 # Install runtime payload for packaging (portable zip + installer)
 install(TARGETS Starlight
     RUNTIME DESTINATION .

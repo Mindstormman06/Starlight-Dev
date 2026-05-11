@@ -342,6 +342,14 @@ set(ASTCENC_SHAREDLIB ON CACHE BOOL "Enable astcenc builds with core library sha
 set(ASTCENC_CLI OFF CACHE BOOL "Enable build of astcenc command line tools")
 add_subdirectory( libs/astcenc )
 
+# Newer astcencoder adds `parent_context` to astcenc_context_alloc; pick call site at configure time.
+file(READ "${CMAKE_SOURCE_DIR}/libs/astcenc/Source/astcenc.h" STARLIGHT_ASTCENC_HEADER_SNIP)
+if(STARLIGHT_ASTCENC_HEADER_SNIP MATCHES "const astcenc_context\\* parent_context\\)")
+	set(STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT TRUE)
+else()
+	set(STARLIGHT_ASTC_CONTEXT_ALLOC_HAS_PARENT FALSE)
+endif()
+
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build libgit2 static" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(BUILD_CLI OFF CACHE BOOL "" FORCE)
