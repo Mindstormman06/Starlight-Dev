@@ -62,7 +62,7 @@ chmod +x build-release.sh
 
 Output: `rootDir/Starlight` (copied from `build/src/Starlight`).
 
-**Common pitfalls**
+**Common issues**
 
 - **Wrong CMake on `PATH`** (Git/MSYS, devkitPro, etc.): the Windows `.bat` scripts use Visual Studio’s bundled `cmake.exe` and run `VsDevCmd` so MSVC headers and `cl.exe` resolve correctly — prefer them over raw `cmake` from an arbitrary shell.
 - **Stale build directory**: if configures fail oddly, delete the matching folder under `out/build/` (or legacy `build/`) and rerun the script.
