@@ -20,6 +20,7 @@ namespace application::manager
 	std::string ProjectMgr::gExportProjectPath = "";
 	std::vector<std::function<void(const std::string&)>> ProjectMgr::gProjectChangeCallbacks;
 	bool ProjectMgr::gIsTrialOfTheChosenHeroProject = false;
+	bool ProjectMgr::gProjectsEnabled = true;
 
 	void ProjectMgr::Initialize()
 	{

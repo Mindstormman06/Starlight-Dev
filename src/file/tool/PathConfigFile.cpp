@@ -4,6 +4,7 @@
 #include <util/BinaryVectorReader.h>
 #include <util/BinaryVectorWriter.h>
 #include <util/Logger.h>
+#include <manager/ProjectMgr.h>
 
 namespace application::file::tool
 {
@@ -24,9 +25,9 @@ namespace application::file::tool
 		}
 
 		uint8_t Version = Reader.ReadUInt8();
-		if (Version != 0x02)
+		if (Version != 0x02 && Version != 0x03)
 		{
-			application::util::Logger::Error("PathConfig", "Version invalid, expected 0x02. Please delete the path config file and reconfigure your paths");
+			application::util::Logger::Error("PathConfig", "Version invalid, expected 0x02 or 0x03. Please delete the path config file and reconfigure your paths");
 			return;
 		}
 
@@ -35,6 +36,9 @@ namespace application::file::tool
 		application::util::FileUtil::gRomFSPath.resize(RomFSPathSize);
 
 		Reader.ReadStruct(application::util::FileUtil::gRomFSPath.data(), RomFSPathSize);
+
+		if (Version >= 0x03)
+			application::manager::ProjectMgr::gProjectsEnabled = Reader.ReadUInt8() != 0;
 
 		application::util::FileUtil::ValidatePaths();
 
@@ -46,11 +50,13 @@ namespace application::file::tool
 		application::util::BinaryVectorWriter Writer;
 
 		Writer.WriteBytes("EPATHCFG"); //Magic
-		Writer.WriteInteger(0x02, sizeof(uint8_t)); //Version
+		Writer.WriteInteger(0x03, sizeof(uint8_t)); //Version
 
 		Writer.WriteInteger(application::util::FileUtil::gRomFSPath.size(), sizeof(uint16_t));
 
 		Writer.WriteBytes(application::util::FileUtil::gRomFSPath.c_str());
+
+		Writer.WriteInteger(application::manager::ProjectMgr::gProjectsEnabled ? 1 : 0, sizeof(uint8_t));
 
 		application::util::FileUtil::WriteFile(Path, Writer.GetData());
 

@@ -12,6 +12,7 @@ namespace application::manager
 		extern std::string gProject;
 		extern std::string gExportProjectPath;
 		extern bool gIsTrialOfTheChosenHeroProject;
+		extern bool gProjectsEnabled;
 		extern std::vector<std::function<void(const std::string&)>> gProjectChangeCallbacks;
 
 		void Initialize();

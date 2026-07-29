@@ -423,31 +423,50 @@ namespace application::manager
         */
 
 
-        gSettingsPopUp.Title("Settings").Width(500.0f).Flag(ImGuiWindowFlags_NoResize).NeedsConfirmation(false).ContentDrawingFunction([](application::rendering::popup::PopUpBuilder& Builder)
+        gSettingsPopUp.Title("Preferences").Width(550.0f).Height(320.0f).NeedsConfirmation(false).ContentDrawingFunction([](application::rendering::popup::PopUpBuilder& Builder)
             {
                 ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(189 / 255.0f, 195 / 255.0f, 199 / 255.0f, 1.0f));
-                ImGui::Text("Paths");
-                ImGui::Separator();
-                //ImGui::NewLine();
-                ImGui::Columns(2, "Paths");
-                ImGui::Indent();
 
-                ImGui::SetColumnWidth(0, ImGui::CalcTextSize("Model Dump Path").x + ImGui::GetStyle().ItemSpacing.x * 2 + ImGui::GetStyle().IndentSpacing);
+                if (ImGui::BeginTabBar("PreferencesTabs"))
+                {
+                    if (ImGui::BeginTabItem("General"))
+                    {
+                        ImGui::NewLine();
+                        ImGui::Columns(2, "Paths");
+                        ImGui::Indent();
 
-                ImGui::Text("RomFS Path");
-                ImGui::NextColumn();
-                ImGui::PushItemWidth(ImGui::GetColumnWidth() - ImGui::GetStyle().ScrollbarSize);
-                bool RomFSValid = !application::util::FileUtil::gRomFSPath.empty();
-                if (RomFSValid)
-                    RomFSValid = application::util::FileUtil::FileExists(application::util::FileUtil::gRomFSPath + "/Pack/Bootup.Nin_NX_NVN.pack.zs");
+                        ImGui::SetColumnWidth(0, ImGui::CalcTextSize("Model Dump Path").x + ImGui::GetStyle().ItemSpacing.x * 2 + ImGui::GetStyle().IndentSpacing);
 
-                ImGui::PushStyleColor(ImGuiCol_FrameBg, RomFSValid ? ImVec4(0.06f, 0.26f, 0.07f, 1.0f) : ImVec4(0.26f, 0.06f, 0.07f, 1.0f));
-                ImGui::InputText("##RomFSPath", &application::util::FileUtil::gRomFSPath);
-                ImGui::PopStyleColor();
-                ImGui::PopItemWidth();
+                        ImGui::Text("RomFS Path");
+                        ImGui::NextColumn();
+                        ImGui::PushItemWidth(ImGui::GetColumnWidth() - ImGui::GetStyle().ScrollbarSize);
+                        bool RomFSValid = !application::util::FileUtil::gRomFSPath.empty();
+                        if (RomFSValid)
+                            RomFSValid = application::util::FileUtil::FileExists(application::util::FileUtil::gRomFSPath + "/Pack/Bootup.Nin_NX_NVN.pack.zs");
 
-                ImGui::Unindent();
-                ImGui::Columns();
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg, RomFSValid ? ImVec4(0.06f, 0.26f, 0.07f, 1.0f) : ImVec4(0.26f, 0.06f, 0.07f, 1.0f));
+                        ImGui::InputText("##RomFSPath", &application::util::FileUtil::gRomFSPath);
+                        ImGui::PopStyleColor();
+                        ImGui::PopItemWidth();
+
+                        ImGui::Unindent();
+                        ImGui::Columns();
+
+                        ImGui::EndTabItem();
+                    }
+
+                    if (ImGui::BeginTabItem("Starlight"))
+                    {
+                        ImGui::NewLine();
+                        ImGui::Checkbox("Enable Projects", &application::manager::ProjectMgr::gProjectsEnabled);
+                        ImGui::TextWrapped("When disabled, the Projects menu is hidden and editors can be opened without selecting a project.");
+
+                        ImGui::EndTabItem();
+                    }
+
+                    ImGui::EndTabBar();
+                }
+
                 ImGui::PopStyleColor();
             }).Register();
 
@@ -597,76 +616,17 @@ namespace application::manager
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
             ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.4f, 0.4f, 0.4f, 1.0f));
 
-            if (ImGui::MenuItem("Settings"))
-            {
-                gSettingsPopUp.Open([](application::rendering::popup::PopUpBuilder& Builder)
-                    {
-                        application::util::FileUtil::ValidatePaths();
-                        application::Editor::InitializeRomFSPathDependant();
-
-                        if (application::util::FileUtil::gPathsValid)
-                        {
-                            application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
-                        }
-                    });
-            }
+            const bool RequiresProject = application::manager::ProjectMgr::gProjectsEnabled && !application::manager::ProjectMgr::IsAnyProjectSelected();
 
 #if defined(TOOL_FORCE_PATHS)
             if (!application::util::FileUtil::gPathsValid)
                 ImGui::BeginDisabled();
 #endif
 
-            if (ImGui::BeginMenu("Projects"))
-            {
-                if (application::util::FileUtil::gPathsValid && gBlockProjectSwitch)
-                    ImGui::BeginDisabled();
-
-                ImGui::Text("Selected: %s", application::manager::ProjectMgr::IsAnyProjectSelected() ? application::manager::ProjectMgr::gProject.c_str() : "None");
-                if (ImGui::MenuItem("Add"))
-                {
-                    gAddProjectPopUp.Open([](application::rendering::popup::PopUpBuilder& Builder)
-                        {
-                            application::manager::ProjectMgr::AddProject(std::string(reinterpret_cast<char*>(Builder.GetDataStorage(0).mPtr)));
-                        });
-                }
-                ImGui::Separator();
-                for (const std::string& Name : application::manager::ProjectMgr::gProjects)
-                {
-                    if (ImGui::MenuItem(Name.c_str()))
-                    {
-                        application::manager::ProjectMgr::SelectProject(Name);
-                    }
-                }
-
-                if (application::util::FileUtil::gPathsValid && gBlockProjectSwitch)
-                    ImGui::EndDisabled();
-
-                if (!application::manager::ProjectMgr::IsAnyProjectSelected())
-                    ImGui::BeginDisabled();
-
-                ImGui::Separator();
-                if (ImGui::MenuItem("Export"))
-                {
-                    gExportProjectPopUp.Open([](application::rendering::popup::PopUpBuilder& Builder)
-                        {
-                            application::manager::ProjectMgr::ExportProject(*reinterpret_cast<bool*>(Builder.GetDataStorage(0).mPtr));
-                        });
-                }
-
-                if (!application::manager::ProjectMgr::IsAnyProjectSelected())
-                    ImGui::EndDisabled();
-
-                ImGui::EndMenu();
-            }
-
-            if(!application::manager::ProjectMgr::IsAnyProjectSelected()
-#if defined(TOOL_FORCE_PATHS)
-                && application::util::FileUtil::gPathsValid
-#endif
-                )
+            if (RequiresProject)
                 ImGui::BeginDisabled();
 
-            if (ImGui::BeginMenu("Tools"))
+            if (ImGui::BeginMenu("Window"))
             {
                 if (ImGui::MenuItem("Map Editor"))
                 {
@@ -691,12 +651,70 @@ namespace application::manager
                 ImGui::EndMenu();
             }
 
-#if defined(TOOL_FORCE_PATHS)
-            if (!application::util::FileUtil::gPathsValid || (application::util::FileUtil::gPathsValid && !application::manager::ProjectMgr::IsAnyProjectSelected()))
-#else
-            if (!application::manager::ProjectMgr::IsAnyProjectSelected())
-#endif
+            if (RequiresProject)
                 ImGui::EndDisabled();
+
+            if (ImGui::MenuItem("Preferences"))
+            {
+                gSettingsPopUp.Open([](application::rendering::popup::PopUpBuilder& Builder)
+                    {
+                        application::util::FileUtil::ValidatePaths();
+                        application::Editor::InitializeRomFSPathDependant();
+
+                        application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
+                    });
+            }
+
+            if (application::manager::ProjectMgr::gProjectsEnabled)
+            {
+                if (ImGui::BeginMenu("Projects"))
+                {
+                    if (application::util::FileUtil::gPathsValid && gBlockProjectSwitch)
+                        ImGui::BeginDisabled();
+
+                    ImGui::Text("Selected: %s", application::manager::ProjectMgr::IsAnyProjectSelected() ? application::manager::ProjectMgr::gProject.c_str() : "None");
+                    if (ImGui::MenuItem("Add"))
+                    {
+                        gAddProjectPopUp.Open([](application::rendering::popup::PopUpBuilder& Builder)
+                            {
+                                application::manager::ProjectMgr::AddProject(std::string(reinterpret_cast<char*>(Builder.GetDataStorage(0).mPtr)));
+                            });
+                    }
+                    ImGui::Separator();
+                    for (const std::string& Name : application::manager::ProjectMgr::gProjects)
+                    {
+                        if (ImGui::MenuItem(Name.c_str()))
+                        {
+                            application::manager::ProjectMgr::SelectProject(Name);
+                        }
+                    }
+
+                    if (application::util::FileUtil::gPathsValid && gBlockProjectSwitch)
+                        ImGui::EndDisabled();
+
+                    if (!application::manager::ProjectMgr::IsAnyProjectSelected())
+                        ImGui::BeginDisabled();
+
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Export"))
+                    {
+                        gExportProjectPopUp.Open([](application::rendering::popup::PopUpBuilder& Builder)
+                            {
+                                application::manager::ProjectMgr::ExportProject(*reinterpret_cast<bool*>(Builder.GetDataStorage(0).mPtr));
+                            });
+                    }
+
+                    if (!application::manager::ProjectMgr::IsAnyProjectSelected())
+                        ImGui::EndDisabled();
+
+                    ImGui::EndMenu();
+                }
+            }
+
+#if defined(TOOL_FORCE_PATHS)
+            if (!application::util::FileUtil::gPathsValid)
+                ImGui::EndDisabled();
+#endif
 
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor();
