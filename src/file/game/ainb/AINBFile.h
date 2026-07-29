@@ -102,13 +102,13 @@ namespace application::file::game::ainb
 		};
 		enum class GlobalType
 		{
-			String,
-			Int,
-			Float,
-			Bool,
-			Vec3f,
-			UserDefined,
-			_Count
+			String = 0,
+			Int = 1,
+			Float = 2,
+			Bool = 3,
+			Vec3f = 4,
+			UserDefined = 5,
+			_Count = 6
 		};
 		static const uint32_t ValueTypeCount = static_cast<uint32_t>(ValueType::_Count);
 		static const uint32_t GlobalTypeCount = static_cast<uint32_t>(GlobalType::_Count);
@@ -155,6 +155,9 @@ namespace application::file::game::ainb
 
 			uint16_t EXBIndex = 0xFFFF;
 			EXB::CommandInfoStruct Function;
+
+			// Vec3f blackboard component this Float property reads: 0=none, 1=X, 2=Y, 3=Z
+			uint8_t VectorComponent = 0;
 		};
 
 		struct AttachmentEntry {
@@ -192,6 +195,9 @@ namespace application::file::game::ainb
 
 			uint16_t EXBIndex = 0xFFFF;
 			EXB::CommandInfoStruct Function;
+
+			// Vec3f blackboard component this Float input reads: 0=none, 1=X, 2=Y, 3=Z
+			uint8_t VectorComponent = 0;
 		};
 
 		struct OutputEntry {
@@ -268,12 +274,28 @@ namespace application::file::game::ainb
 			float Probability = -10000.0f;
 			ResidentEntry UpdateInfo;
 
+			// Blackboard param reference for selector Child plugs, in place of a literal condition
+			int32_t BlackboardIndex = -1;
+			int32_t ConditionMinBlackboardIndex = -1;
+			int32_t ConditionMaxBlackboardIndex = -1;
+
+			// BSASelectorUpdaterPlug - name-based special case ("SelectorBSABrainVerbUpdater"/"SelectorBSAFormChangeUpdater"), not tied to a NodeTypes value
+			int32_t ChildEnumBBIndex = -1;
+			uint32_t ChildEnumValue = 0;
+
 			std::string DynamicStateName = "MapEditor_AINB_NoVal";
 			bool IsRemovedAtRuntime = false;
 			uint16_t ReplacementNodeIndex = 0xFFFF;
 
 			uint32_t EditorId = 0;
 			std::string EditorName = "";
+
+			// Extended (16-byte) selector input plug data - version/node-type gated
+			bool HasPlugDefault = false;
+			uint32_t PlugUnknown = 0;
+			std::string PlugDefaultValueStr = "";
+			int32_t PlugDefaultValueInt = 0;
+			uint32_t PlugUnknown2 = 0; //2nd trailing word for BoolSelectorInputPlug/F32SelectorInputPlug
 		};
 
 		struct Node {

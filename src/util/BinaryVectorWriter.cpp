@@ -9,7 +9,10 @@ namespace application::util
 
 	void BinaryVectorWriter::WriteByte(char Byte)
 	{
-		this->mData.resize(this->mData.size() + 1);
+		if (this->mOffset + 1 > this->mData.size())
+		{
+			this->mData.resize(this->mOffset + 1);
+		}
 		this->mData[mOffset] = Byte;
 		this->mOffset++;
 	}
@@ -43,7 +46,7 @@ namespace application::util
 	{
 		if (this->mOffset + strlen(Bytes) > this->mData.size())
 		{
-			this->mData.resize(this->mData.size() + strlen(Bytes));
+			this->mData.resize(this->mOffset + strlen(Bytes));
 		}
 		for (int i = 0; i < strlen(Bytes); i++)
 		{
@@ -56,7 +59,7 @@ namespace application::util
 	{
 		if (this->mOffset + Size > this->mData.size())
 		{
-			this->mData.resize(this->mData.size() + Size);
+			this->mData.resize(this->mOffset + Size);
 		}
 		for (int i = 0; i < strlen(Bytes); i++)
 		{
@@ -69,7 +72,7 @@ namespace application::util
 	{
 		if (this->mOffset + Size > this->mData.size())
 		{
-			this->mData.resize(this->mData.size() + Size);
+			this->mData.resize(this->mOffset + Size);
 		}
 		for (int i = 0; i < Size; i++)
 		{
@@ -82,7 +85,7 @@ namespace application::util
 	{
 		if (this->mOffset + Size > this->mData.size())
 		{
-			this->mData.resize(this->mData.size() + Size);
+			this->mData.resize(this->mOffset + Size);
 		}
 
 		char Bytes[8] = { 0 };

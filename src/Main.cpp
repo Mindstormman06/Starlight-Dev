@@ -10,6 +10,7 @@
 #ifdef _WIN32
 #include <io.h>
 #include <fcntl.h>
+#include <crtdbg.h>
 #define dup _dup
 #define dup2 _dup2
 #define fileno _fileno
@@ -40,6 +41,17 @@ MrMystery - 2023
 int main(int argc, char* argv[])
 {
     backward::SignalHandling sh;
+
+#ifdef _WIN32
+    // Test modes run headless, so route CRT assertions to stderr instead of a blocking dialog.
+    if (argc > 1 && (std::string(argv[1]) == "--test-file" || std::string(argv[1]) == "--test" || std::string(argv[1]) == "-t" || std::string(argv[1]) == "--ainb-roundtrip"))
+    {
+        _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+        _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+        _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    }
+#endif
 
     if (argc > 1 && std::string(argv[1]) == "--test-file")
     {

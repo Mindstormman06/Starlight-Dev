@@ -288,10 +288,23 @@ namespace application::file::game::ainb
 		Writer.WriteInteger(NewInstructions.size(), sizeof(uint32_t));
 		std::vector<int> SignatureOffsets;
 
-		for (EXB::InstructionStruct Instruction : NewInstructions)
+		for (EXB::InstructionStruct& Instruction : NewInstructions)
 		{
 			if (Instruction.Type != EXB::Command::Terminator)
 			{
+				if (Instruction.LHSSource == EXB::Source::ImmStr && std::holds_alternative<std::string>(Instruction.LHSValue))
+				{
+					std::string Str = std::get<std::string>(Instruction.LHSValue);
+					AddToStringTable(Str, StringTable);
+					Instruction.LHSIndexValue = GetOffsetInStringTable(Str, StringTable);
+				}
+				if (Instruction.RHSSource == EXB::Source::ImmStr && std::holds_alternative<std::string>(Instruction.RHSValue))
+				{
+					std::string Str = std::get<std::string>(Instruction.RHSValue);
+					AddToStringTable(Str, StringTable);
+					Instruction.RHSIndexValue = GetOffsetInStringTable(Str, StringTable);
+				}
+
 				Writer.WriteInteger((uint8_t)Instruction.Type, sizeof(uint8_t));
 				Writer.WriteInteger((uint8_t)Instruction.DataType, sizeof(uint8_t));
 
@@ -336,7 +349,7 @@ namespace application::file::game::ainb
 		uint32_t StringStart = ParamStart;
 		for (EXB::InstructionStruct Instruction : NewInstructions)
 		{
-			if (*reinterpret_cast<uint32_t*>(&Instruction.LHSValue) != 0xFFFF)
+			if (Instruction.LHSSource == EXB::Source::ParamTbl || Instruction.LHSSource == EXB::Source::ParamTblStr || Instruction.RHSSource == EXB::Source::ParamTbl || Instruction.RHSSource == EXB::Source::ParamTblStr)
 			{
 				if (Instruction.LHSSource == EXB::Source::ParamTbl)
 				{

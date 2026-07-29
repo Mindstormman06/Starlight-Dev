@@ -110,7 +110,7 @@ namespace application::file::game::ainb
 		Entry.Offset = Reader->ReadUInt32();
 		Entry.EXBFunctionCount = Reader->ReadUInt16();
 		Entry.EXBIOSize = Reader->ReadUInt16();
-		Entry.Name = Reader->ReadUInt32();
+		Entry.NameHash = Reader->ReadUInt32();
 		return Entry;
 	}
 
@@ -140,12 +140,17 @@ namespace application::file::game::ainb
 			}
 			if ((Flags & 0xc200) == 0xc200) {
 				Entry.EXBIndex = Index;
-				Entry.Function = this->EXBFile.Commands[Entry.EXBIndex];
-				this->Functions[Entry.EXBIndex] = Entry.Function;
+				if (Entry.EXBIndex >= this->EXBFile.Commands.size()) {
+				}
+				else {
+					Entry.Function = this->EXBFile.Commands[Entry.EXBIndex];
+					this->Functions[Entry.EXBIndex] = Entry.Function;
+				}
 			}
 			else if (Flags & 0x8000)
 			{
 				Entry.GlobalParametersIndex = Index;
+				Entry.VectorComponent = (Flags >> 10) & 3;
 			}
 		}
 
@@ -266,6 +271,15 @@ namespace application::file::game::ainb
 		Header.x6cSection = Reader.ReadUInt32();
 		Header.FileHashOffset = Reader.ReadUInt32();
 
+		if (Header.FileHashOffset != 0)
+		{
+			uint32_t SavedPos = Reader.GetPosition();
+			Reader.Seek(Header.FileHashOffset, application::util::BinaryVectorReader::Position::Begin);
+			this->Header.BlackboardId = Reader.ReadUInt32();
+			this->Header.ParentBlackboardId = Reader.ReadUInt32();
+			Reader.Seek(SavedPos, application::util::BinaryVectorReader::Position::Begin);
+		}
+
 		/*
 		if (Header.NodeCount == 0)
 		{
@@ -313,6 +327,7 @@ namespace application::file::game::ainb
 				}
 				GEntry.Name = ReadStringFromStringPool(&Reader, BitField & 0x3FFFFF);
 				GEntry.Notes = ReadStringFromStringPool(&Reader, Reader.ReadUInt32());
+				GEntry.GlobalValueType = j;
 				Parameters[i] = GEntry;
 			}
 			this->GlobalParameters[j] = Parameters;
@@ -356,6 +371,9 @@ namespace application::file::game::ainb
 		for (int i = 0; i < this->GlobalParameters.size(); i++) {
 			for (GlobalEntry& Entry : this->GlobalParameters[i]) {
 				if (Entry.Index != 0xFFFFFFFF) {
+					if (Entry.Index >= this->GlobalReferences.size()) {
+						continue;
+					}
 					Entry.FileReference = this->GlobalReferences[Entry.Index];
 				}
 			}
@@ -407,12 +425,17 @@ namespace application::file::game::ainb
 						}
 						if ((Flags & 0xc200) == 0xc200) {
 							Parameter.EXBIndex = Index;
-							Parameter.Function = this->EXBFile.Commands[Parameter.EXBIndex];
-							this->Functions[Parameter.EXBIndex] = Parameter.Function;
+							if (Parameter.EXBIndex >= this->EXBFile.Commands.size()) {
+							}
+							else {
+								Parameter.Function = this->EXBFile.Commands[Parameter.EXBIndex];
+								this->Functions[Parameter.EXBIndex] = Parameter.Function;
+							}
 						}
 						else if (Flags & 0x8000)
 						{
 							Parameter.GlobalParametersIndex = Index;
+							Parameter.VectorComponent = (Flags >> 10) & 3;
 						}
 					}
 
@@ -462,12 +485,17 @@ namespace application::file::game::ainb
 							//application::util::Logger::Warning("AINBDecoder", "Found ImmediateParameter using EXB function, which is currently unsupported. Saving will break this file, please send the following message to mrmystery0778 on Discord");
 							//application::util::Logger::Warning("AINBDecoder", "Line 441, Flag 0xc200 found. GlobalParamIndex skipped. Name: " + this->Header.FileName + ", Category: " + this->Header.FileCategory);
 							Parameter.EXBIndex = Index;
-							Parameter.Function = this->EXBFile.Commands[Parameter.EXBIndex];
-							this->Functions[Parameter.EXBIndex] = Parameter.Function;
+							if (Parameter.EXBIndex >= this->EXBFile.Commands.size()) {
+							}
+							else {
+								Parameter.Function = this->EXBFile.Commands[Parameter.EXBIndex];
+								this->Functions[Parameter.EXBIndex] = Parameter.Function;
+							}
 						}
 						else if (Flags & 0x8000)
 						{
 							Parameter.GlobalParametersIndex = Index;
+							Parameter.VectorComponent = (Flags >> 10) & 3;
 						}
 					}
 
@@ -506,6 +534,7 @@ namespace application::file::game::ainb
 				}
 			}
 			for (AttachmentEntry& Param : this->AttachmentParameters) {
+				Reader.Seek(Param.Offset, application::util::BinaryVectorReader::Position::Begin);
 				Reader.Seek(4, application::util::BinaryVectorReader::Position::Current);
 				std::vector<std::vector<ImmediateParameter>> Parameters(6);
 				for (int i = 0; i < 6; i++) {
@@ -530,8 +559,9 @@ namespace application::file::game::ainb
 						}
 						Parameters[i][j] = this->ImmediateParameters[i][Index + j];
 					}
-					Reader.Seek(48, application::util::BinaryVectorReader::Position::Current);
 				}
+				//Trailing 48-byte block of unknown purpose, always skipped on read and regenerated as placeholder data on write
+				Reader.Seek(48, application::util::BinaryVectorReader::Position::Current);
 				Param.Parameters = Parameters;
 			}
 			Reader.Seek(Header.AttachmentIndexOffset, application::util::BinaryVectorReader::Position::Begin);
@@ -591,8 +621,12 @@ namespace application::file::game::ainb
 							}
 							if ((Flags & 0xc200) == 0xc200) {
 								Entry.EXBIndex = Index;
-								Entry.Function = this->EXBFile.Commands[Entry.EXBIndex];
-								this->Functions[Entry.EXBIndex] = Entry.Function;
+								if (Entry.EXBIndex >= this->EXBFile.Commands.size()) {
+								}
+								else {
+									Entry.Function = this->EXBFile.Commands[Entry.EXBIndex];
+									this->Functions[Entry.EXBIndex] = Entry.Function;
+								}
 							}
 							else if (Flags & 0x8000)
 							{
@@ -728,13 +762,23 @@ namespace application::file::game::ainb
 
 			if (Node.PreconditionCount > 0) {
 				for (int i = 0; i < Node.PreconditionCount; i++) {
+					if (Node.BasePreconditionNode + i >= this->PreconditionNodes.size()) {
+						continue;
+					}
 					Node.PreconditionNodes.push_back(this->PreconditionNodes[Node.BasePreconditionNode + i]);
 				}
 			}
 
 			if (Node.AttachmentCount > 0) {
 				for (int i = 0; i < Node.AttachmentCount; i++) {
-					Node.Attachments.push_back(this->AttachmentParameters[this->AttachmentArray[Node.BaseAttachmentIndex + i]]);
+					if (Node.BaseAttachmentIndex + i >= this->AttachmentArray.size()) {
+						continue;
+					}
+					uint32_t AttachIdx = this->AttachmentArray[Node.BaseAttachmentIndex + i];
+					if (AttachIdx >= this->AttachmentParameters.size()) {
+						continue;
+					}
+					Node.Attachments.push_back(this->AttachmentParameters[AttachIdx]);
 				}
 				for (AINBFile::AttachmentEntry Attachment : Node.Attachments)
 				{
@@ -772,9 +816,11 @@ namespace application::file::game::ainb
 				uint32_t Count = Reader.ReadUInt32();
 
 				for (int j = 0; j < Count; j++) {
+					if (Index + j >= this->ImmediateParameters[i].size()) {
+						continue;
+					}
 					LocalImmediateParameters[i].push_back(this->ImmediateParameters[i][Index + j]);
-					if (LocalImmediateParameters[i].size() <= (Index + j)) continue;
-					if (LocalImmediateParameters[i][Index + j].EXBIndex != 0xFFFF)
+					if (LocalImmediateParameters[i].back().EXBIndex != 0xFFFF)
 						EXBCount++;
 				}
 			}
@@ -787,13 +833,14 @@ namespace application::file::game::ainb
 				uint32_t Index = Reader.ReadUInt32();
 				uint32_t Count = Reader.ReadUInt32();
 				for (int j = 0; j < Count; j++) {
+					if (Index + j >= this->InputParameters[i].size()) {
+						continue;
+					}
 					LocalInputParameters[i].push_back(this->InputParameters[i][Index + j]);
 
-					if (LocalInputParameters[i].size() <= (Index + j)) continue;
-
-					if (LocalInputParameters[i][Index + j].EXBIndex != 0xFFFF)
+					if (LocalInputParameters[i].back().EXBIndex != 0xFFFF)
 						EXBCount++;
-					for (AINBFile::MultiEntry MEntry : LocalInputParameters[i][Index + j].Sources)
+					for (AINBFile::MultiEntry MEntry : LocalInputParameters[i].back().Sources)
 					{
 						if (MEntry.EXBIndex != 0xFFFF)
 							EXBCount++;
@@ -803,6 +850,9 @@ namespace application::file::game::ainb
 				Index = Reader.ReadUInt32();
 				Count = Reader.ReadUInt32();
 				for (int j = 0; j < Count; j++) {
+					if (Index + j >= this->OutputParameters[i].size()) {
+						continue;
+					}
 					LocalOutputParameters[i].push_back(this->OutputParameters[i][Index + j]);
 				}
 			}
@@ -838,9 +888,46 @@ namespace application::file::game::ainb
 						if (i == 0 || i == 4 || i == 5) {
 							Info.Parameter = ReadStringFromStringPool(&Reader, Reader.ReadUInt32());
 						}
+						//Only StringSelector/S32Selector (and Expression, reusing the same shape) grow to 16 bytes here in version >= 0x407
+						bool UsesSelectorInputPlug =
+							(i == 4 && (Node.Type == (uint16_t)NodeTypes::Element_StringSelector || Node.Type == (uint16_t)NodeTypes::Element_Expression)) ||
+							(i == 5 && (Node.Type == (uint16_t)NodeTypes::Element_S32Selector || Node.Type == (uint16_t)NodeTypes::Element_Expression));
+						if (UsesSelectorInputPlug && Header.Version >= 0x407) {
+							Info.HasPlugDefault = true;
+							Info.PlugUnknown = Reader.ReadUInt32();
+							if (i == 4) {
+								Info.PlugDefaultValueStr = ReadStringFromStringPool(&Reader, Reader.ReadUInt32());
+							}
+							else {
+								Info.PlugDefaultValueInt = Reader.ReadInt32();
+							}
+						}
+						if (i == 0 && (Node.Type == (uint16_t)NodeTypes::Element_BoolSelector || Node.Type == (uint16_t)NodeTypes::Element_F32Selector)) {
+							// BoolSelectorInputPlug / F32SelectorInputPlug: unconditionally 16 bytes.
+							Info.HasPlugDefault = true;
+							Info.PlugUnknown = Reader.ReadUInt32();
+							Info.PlugUnknown2 = Reader.ReadUInt32();
+						}
+						else if (i == 0 && Node.Type == (uint16_t)NodeTypes::Element_Expression && Header.Version >= 0x407) {
+							// Expression reuses S32SelectorInputPlug for its Generic plug.
+							Info.HasPlugDefault = true;
+							Info.PlugUnknown = Reader.ReadUInt32();
+							Info.PlugDefaultValueInt = Reader.ReadInt32();
+						}
 						if (i == 2) {
 							std::string Ref = ReadStringFromStringPool(&Reader, Reader.ReadUInt32());
-							if (Ref != "") {
+							if (Node.Name == "SelectorBSABrainVerbUpdater" || Node.Name == "SelectorBSAFormChangeUpdater") {
+								Info.Parameter = Ref;
+								uint32_t BBFlag = Reader.ReadUInt32();
+								if (BBFlag >> 31) {
+									Info.ChildEnumBBIndex = BBFlag & 0xFFFF;
+									Reader.ReadUInt32(); // discarded
+								}
+								else {
+									Info.ChildEnumValue = Reader.ReadUInt32();
+								}
+							}
+							else if (Ref != "") {
 								if (Node.Type == (uint16_t)NodeTypes::Element_BoolSelector) {
 									Info.Condition = Ref;
 								}
@@ -861,36 +948,53 @@ namespace application::file::game::ainb
 								if (Node.Type == (uint16_t)NodeTypes::Element_S32Selector) {
 									uint16_t Index = Reader.ReadUInt16();
 									bool Flag = Reader.ReadUInt16() >> 15; //Is Valid Index
-									if (Flag && Index < this->GlobalParameters[0].size()) {
-										Node.Input = this->GlobalParameters[0][Index];
+									if (Flag) {
+										Info.BlackboardIndex = Index;
+										if (Index < this->GlobalParameters[0].size()) {
+											Node.Input = this->GlobalParameters[0][Index];
+										}
 									}
 									if (IsEnd) {
 										Info.Condition = "Default";
+										Reader.Seek(4, application::util::BinaryVectorReader::Position::Current); // expected-zero padding
 									}
 									else {
 										Info.Condition = std::to_string(Reader.ReadInt32());
 									}
 								}
 								else if (Node.Type == (uint16_t)NodeTypes::Element_F32Selector) {
-									uint16_t Index = Reader.ReadUInt16();
-									bool Flag = Reader.ReadUInt16() >> 15; //Is Valid Index
-									if (Flag && Index < this->GlobalParameters[2].size()) {
-										Node.Input = this->GlobalParameters[2][Index];
-									}
-									if (!IsEnd) {
-										Info.ConditionMin = Reader.ReadFloat();
-										Reader.Seek(4, application::util::BinaryVectorReader::Position::Current);
-										Info.ConditionMax = Reader.ReadFloat();
+									if (IsEnd) {
+										Info.DynamicStateName = ReadStringFromStringPool(&Reader, Reader.ReadUInt32());
 									}
 									else {
-										Info.DynamicStateName = ReadStringFromStringPool(&Reader, Reader.ReadUInt32());
+										uint16_t MinIndex = Reader.ReadUInt16();
+										bool MinFlag = Reader.ReadUInt16() >> 15;
+										if (MinFlag) {
+											Info.ConditionMinBlackboardIndex = MinIndex;
+											Reader.Seek(4, application::util::BinaryVectorReader::Position::Current); // discarded value
+										}
+										else {
+											Info.ConditionMin = Reader.ReadFloat();
+										}
+										uint16_t MaxIndex = Reader.ReadUInt16();
+										bool MaxFlag = Reader.ReadUInt16() >> 15;
+										if (MaxFlag) {
+											Info.ConditionMaxBlackboardIndex = MaxIndex;
+											Reader.Seek(4, application::util::BinaryVectorReader::Position::Current); // discarded value
+										}
+										else {
+											Info.ConditionMax = Reader.ReadFloat();
+										}
 									}
 								}
 								else if (Node.Type == (uint16_t)NodeTypes::Element_StringSelector) {
 									uint16_t Index = Reader.ReadUInt16();
 									bool Flag = Reader.ReadUInt16() >> 15; //Is Valid Index
-									if (Flag && Index < this->GlobalParameters[3].size()) {
-										Node.Input = this->GlobalParameters[3][Index];
+									if (Flag) {
+										Info.BlackboardIndex = Index;
+										if (Index < this->GlobalParameters[3].size()) {
+											Node.Input = this->GlobalParameters[3][Index];
+										}
 									}
 									if (IsEnd) {
 										Info.DynamicStateName = ReadStringFromStringPool(&Reader, Reader.ReadUInt32());
@@ -899,8 +1003,13 @@ namespace application::file::game::ainb
 										Info.Condition = ReadStringFromStringPool(&Reader, Reader.ReadUInt32());
 									}
 								}
-								else if (Node.Type == (uint16_t)NodeTypes::Element_RandomSelector) 
+								else if (Node.Type == (uint16_t)NodeTypes::Element_RandomSelector)
 								{
+									uint16_t Index = Reader.ReadUInt16();
+									bool Flag = Reader.ReadUInt16() >> 15;
+									if (Flag) {
+										Info.BlackboardIndex = Index;
+									}
 									Info.Probability = Reader.ReadFloat();
 								}
 								else 
@@ -911,7 +1020,11 @@ namespace application::file::game::ainb
 						}
 						if (i == 3) {
 							uint32_t UpdateArrayIndex = Reader.ReadUInt32();
-							Info.UpdateInfo = this->ResidentUpdateArray[UpdateArrayIndex];
+							if (UpdateArrayIndex >= this->ResidentUpdateArray.size()) {
+							}
+							else {
+								Info.UpdateInfo = this->ResidentUpdateArray[UpdateArrayIndex];
+							}
 						}
 						Node.LinkedNodes[i].push_back(Info);
 					}
@@ -952,6 +1065,9 @@ namespace application::file::game::ainb
 		}
 		if (this->Replacements.size() > 0) {
 			for (ChildReplace& Replacement : this->Replacements) {
+				if (Replacement.NodeIndex >= this->Nodes.size()) {
+					continue;
+				}
 				if (Replacement.Type == 0) {
 					for (int Type = 0; Type < 10; Type++) {
 						for (LinkedNodeInfo& LinkedNode : this->Nodes[Replacement.NodeIndex].LinkedNodes[Type]) {
@@ -973,7 +1089,11 @@ namespace application::file::game::ainb
 					}
 				}
 				if (Replacement.Type == 2) {
-					this->Nodes[Replacement.NodeIndex].Attachments[Replacement.AttachmentIndex].IsRemovedAtRuntie = true;
+					if (Replacement.AttachmentIndex >= this->Nodes[Replacement.NodeIndex].Attachments.size()) {
+					}
+					else {
+						this->Nodes[Replacement.NodeIndex].Attachments[Replacement.AttachmentIndex].IsRemovedAtRuntie = true;
+					}
 				}
 			}
 		}
@@ -990,30 +1110,32 @@ namespace application::file::game::ainb
 			this->EmbeddedAinbArray[i] = Entry;
 		}
 
-		/* Command node residents */
-		for (AINBFile::Command& Cmd : Commands)
-		{
-			if (Cmd.LeftNodeIndex >= 0 && Nodes.size() > Cmd.LeftNodeIndex)
-			{
-				Cmd.IsLeftNodeResident = std::find(Nodes[Cmd.LeftNodeIndex].Flags.begin(), Nodes[Cmd.LeftNodeIndex].Flags.end(), FlagsStruct::IsResidentNode) != Nodes[Cmd.LeftNodeIndex].Flags.end();
-				Nodes[Cmd.LeftNodeIndex].Flags.erase(std::remove_if(
-					Nodes[Cmd.LeftNodeIndex].Flags.begin(), Nodes[Cmd.LeftNodeIndex].Flags.end(),
-					[](const AINBFile::FlagsStruct& Flag) {
-						return Flag == AINBFile::FlagsStruct::IsResidentNode;
-					}), Nodes[Cmd.LeftNodeIndex].Flags.end());
-			}
-			if (Cmd.RightNodeIndex >= 0 && Nodes.size() > Cmd.RightNodeIndex)
-			{
-				Cmd.IsRightNodeResident = std::find(Nodes[Cmd.RightNodeIndex].Flags.begin(), Nodes[Cmd.RightNodeIndex].Flags.end(), FlagsStruct::IsResidentNode) != Nodes[Cmd.RightNodeIndex].Flags.end();
-				Nodes[Cmd.RightNodeIndex].Flags.erase(std::remove_if(
-					Nodes[Cmd.RightNodeIndex].Flags.begin(), Nodes[Cmd.RightNodeIndex].Flags.end(),
-					[](const AINBFile::FlagsStruct& Flag) {
-						return Flag == AINBFile::FlagsStruct::IsResidentNode;
-					}), Nodes[Cmd.RightNodeIndex].Flags.end());
-			}
-		}
+		// FlagsStruct::IsResidentNode (flags byte bit 2) is actually "Is Root Node" and
+		// isn't Command-related; it's already set correctly from the raw read above.
 
 		this->Loaded = true;
+	}
+
+	AINBFile::OutputEntry* AINBFile::ResolveOutputEntry(int NodeIndex, int Type, int ParameterIndex) {
+		if (NodeIndex < 0 || NodeIndex >= (int)this->Nodes.size())
+			return nullptr;
+		AINBFile::Node& TargetNode = this->Nodes[NodeIndex];
+		if (Type >= 0 && Type < (int)TargetNode.OutputParameters.size() && ParameterIndex >= 0 && ParameterIndex < (int)TargetNode.OutputParameters[Type].size())
+			return &TargetNode.OutputParameters[Type][ParameterIndex];
+		for (int OtherType = 0; OtherType < (int)TargetNode.OutputParameters.size(); OtherType++) {
+			if (ParameterIndex >= 0 && ParameterIndex < (int)TargetNode.OutputParameters[OtherType].size())
+				return &TargetNode.OutputParameters[OtherType][ParameterIndex];
+		}
+		return nullptr;
+	}
+
+	int AINBFile::GetTotalOutputCount(int NodeIndex) {
+		if (NodeIndex < 0 || NodeIndex >= (int)this->Nodes.size())
+			return 0;
+		int Total = 0;
+		for (const std::vector<AINBFile::OutputEntry>& Category : this->Nodes[NodeIndex].OutputParameters)
+			Total += (int)Category.size();
+		return Total;
 	}
 
 	AINBFile::Node& AINBFile::GetBaseNode() {
@@ -1267,36 +1389,6 @@ namespace application::file::game::ainb
 
 			Writer.WriteInteger((uint16_t)Command.LeftNodeIndex, sizeof(uint16_t));
 			Writer.WriteInteger((uint16_t)Command.RightNodeIndex + 1, sizeof(uint16_t));
-
-			//Add resident flags to nodes
-			if (FileCategoryNum != 1) //Not Logic
-			{
-				if (Command.IsLeftNodeResident && Command.LeftNodeIndex >= 0 && Nodes.size() > Command.LeftNodeIndex && std::find(Nodes[Command.LeftNodeIndex].Flags.begin(), Nodes[Command.LeftNodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) == Nodes[Command.LeftNodeIndex].Flags.end())
-				{
-					Nodes[Command.LeftNodeIndex].Flags.push_back(AINBFile::FlagsStruct::IsResidentNode);
-				}
-				else if (!Command.IsLeftNodeResident && Command.LeftNodeIndex >= 0 && Nodes.size() > Command.LeftNodeIndex && std::find(Nodes[Command.LeftNodeIndex].Flags.begin(), Nodes[Command.LeftNodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) != Nodes[Command.LeftNodeIndex].Flags.end())
-				{
-					Nodes[Command.LeftNodeIndex].Flags.erase(std::remove_if(
-						Nodes[Command.LeftNodeIndex].Flags.begin(), Nodes[Command.LeftNodeIndex].Flags.end(),
-						[](const AINBFile::FlagsStruct& Flag) {
-							return Flag == AINBFile::FlagsStruct::IsResidentNode;
-						}), Nodes[Command.LeftNodeIndex].Flags.end());
-				}
-
-				if (Command.IsRightNodeResident && Command.RightNodeIndex >= 0 && Nodes.size() > Command.RightNodeIndex && std::find(Nodes[Command.RightNodeIndex].Flags.begin(), Nodes[Command.RightNodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) == Nodes[Command.RightNodeIndex].Flags.end())
-				{
-					Nodes[Command.RightNodeIndex].Flags.push_back(AINBFile::FlagsStruct::IsResidentNode);
-				}
-				else if (!Command.IsRightNodeResident && Command.RightNodeIndex >= 0 && Nodes.size() > Command.RightNodeIndex && std::find(Nodes[Command.RightNodeIndex].Flags.begin(), Nodes[Command.RightNodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) != Nodes[Command.RightNodeIndex].Flags.end())
-				{
-					Nodes[Command.RightNodeIndex].Flags.erase(std::remove_if(
-						Nodes[Command.RightNodeIndex].Flags.begin(), Nodes[Command.RightNodeIndex].Flags.end(),
-						[](const AINBFile::FlagsStruct& Flag) {
-							return Flag == AINBFile::FlagsStruct::IsResidentNode;
-						}), Nodes[Command.RightNodeIndex].Flags.end());
-				}
-			}
 		}
 
 		//TODO: Reconstruct parameters, etc.
@@ -1444,106 +1536,26 @@ namespace application::file::game::ainb
 				}
 			}
 
-			if (this->Header.FileCategory == "Logic")
-			{
-				if (std::find(Node.Flags.begin(), Node.Flags.end(), AINBFile::FlagsStruct::IsPreconditionNode) == Node.Flags.end())
-					Node.Flags.push_back(AINBFile::FlagsStruct::IsPreconditionNode);
-			}
-			else
-			{
-				for (int i = 0; i < AINBFile::ValueTypeCount; i++)
-				{
-					for (AINBFile::InputEntry& Param : Node.InputParameters[i])
-					{
-						if (!Param.Sources.empty())
-						{
-							for (AINBFile::MultiEntry& Entry : Param.Sources)
-							{
-								if (std::find(this->Nodes[Entry.NodeIndex].Flags.begin(), this->Nodes[Entry.NodeIndex].Flags.end(), AINBFile::FlagsStruct::IsPreconditionNode) == this->Nodes[Entry.NodeIndex].Flags.end())
-								{
-									//Checking if node is a linked node through standard links
-									bool NeedsPreconditionFlag = true;
-									for (AINBFile::LinkedNodeInfo& Info : this->Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::StandardLink])
-									{
-										if (Info.NodeIndex == Node.NodeIndex)
-										{
-											NeedsPreconditionFlag = false;
-											break;
-										}
-									}
 
-									if(std::find(this->Nodes[Entry.NodeIndex].Flags.begin(), this->Nodes[Entry.NodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) != this->Nodes[Entry.NodeIndex].Flags.end())
-										NeedsPreconditionFlag = false;
-
-									if (NeedsPreconditionFlag)
-										this->Nodes[Entry.NodeIndex].Flags.push_back(AINBFile::FlagsStruct::IsPreconditionNode);
-								}
-							}
-						}
-						if (Param.NodeIndex >= 0) //Input param is linked to other node
-						{
-							if (std::find(this->Nodes[Param.NodeIndex].Flags.begin(), this->Nodes[Param.NodeIndex].Flags.end(), AINBFile::FlagsStruct::IsPreconditionNode) == this->Nodes[Param.NodeIndex].Flags.end())
-							{
-								//Checking if node is a linked node through standard links
-								bool NeedsPreconditionFlag = true;
-								for (AINBFile::LinkedNodeInfo& Info : this->Nodes[Param.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::StandardLink])
-								{
-									if (Info.NodeIndex == Node.NodeIndex)
-									{
-										NeedsPreconditionFlag = false;
-										break;
-									}
-								}
-
-								if(std::find(this->Nodes[Param.NodeIndex].Flags.begin(), this->Nodes[Param.NodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) != this->Nodes[Param.NodeIndex].Flags.end())
-									NeedsPreconditionFlag = false;
-
-								if (NeedsPreconditionFlag)
-									this->Nodes[Param.NodeIndex].Flags.push_back(AINBFile::FlagsStruct::IsPreconditionNode);
-							}
-						}
-					}
-				}
-			}
-		}
-
-		for (AINBFile::Node& Node : this->Nodes)
-		{
-			for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
-			{
-				for (AINBFile::InputEntry& Entry : Node.InputParameters[Type])
-				{
-					if (Entry.NodeIndex == -1)
-					{
-						Entry.ParameterIndex = 0;
-					}
-				}
-			}
 		}
 
 		//Setting the outputs SetPointerFlagsBitZero fields to true -> true if it is linked to somewhere else
 		//Furthermore, if an input parameter is linked, all flags should be cleared
 		//Last but not least, the Pulse TLS flag is given to every input parameter that is linked to an output parameter through single or multi link or by linking it to a parameter of the local blackboard
+		//This only adds the flag on a confirmed same-file reference; it never clears an existing one, since it can legitimately be set with no local reference (e.g. consumed externally)
 		{
-			for (AINBFile::Node& Node : this->Nodes)
-			{
-				for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
-				{
-					for (AINBFile::OutputEntry& Entry : Node.OutputParameters[Type])
-					{
-						Entry.SetPointerFlagsBitZero = false;
-					}
-				}
-			}
 			for (AINBFile::Node& Node : this->Nodes)
 			{
 				for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
 				{
 					for (AINBFile::InputEntry& Entry : Node.InputParameters[Type])
 					{
-						if (Entry.NodeIndex >= 0)
+						//NodeIndex can be stale on expression/blackboard-driven entries, so only trust it when neither is set
+						if (Entry.NodeIndex >= 0 && Entry.EXBIndex == 0xFFFF && Entry.GlobalParametersIndex == 0xFFFF)
 						{
-							Nodes[Entry.NodeIndex].OutputParameters[Type][Entry.ParameterIndex].SetPointerFlagsBitZero = true;
+							AINBFile::OutputEntry* Target = ResolveOutputEntry(Entry.NodeIndex, Type, Entry.ParameterIndex);
+							if (Target != nullptr)
+								Target->SetPointerFlagsBitZero = true;
 							Entry.Flags.clear();
 						}
 						else if (!Entry.Sources.empty())
@@ -1551,10 +1563,20 @@ namespace application::file::game::ainb
 							Entry.Flags.clear();
 							for (AINBFile::MultiEntry& Multi : Entry.Sources)
 							{
-								Nodes[Multi.NodeIndex].OutputParameters[Type][Multi.ParameterIndex].SetPointerFlagsBitZero = true;
+								//Same caveat as above, per source
+								if (Multi.EXBIndex == 0xFFFF && Multi.GlobalParametersIndex == 0xFFFF)
+								{
+									AINBFile::OutputEntry* Target = ResolveOutputEntry(Multi.NodeIndex, Type, Multi.ParameterIndex);
+									if (Target != nullptr)
+										Target->SetPointerFlagsBitZero = true;
+								}
 							}
 						}
 						else if (Entry.GlobalParametersIndex != 0xFFFF)
+						{
+							Entry.Flags.clear();
+						}
+						else if (Entry.EXBIndex != 0xFFFF)
 						{
 							Entry.Flags.clear();
 						}
@@ -1569,7 +1591,6 @@ namespace application::file::game::ainb
 		}
 
 		std::map<uint16_t, uint16_t> NodeIndexToPreconditionNodeIndex;
-
 		uint16_t NodeIndexToPreconditionNodeIndexCount = 0;
 		for (AINBFile::Node& Node : this->Nodes)
 		{
@@ -1582,76 +1603,7 @@ namespace application::file::game::ainb
 
 		for (AINBFile::Node& Node : this->Nodes)
 		{
-			if (!Node.PreconditionNodes.empty())
-			{
-				Node.PreconditionCount = Node.PreconditionNodes.size();
-			}
-			else
-			{
-				Node.PreconditionCount = 0;
-				for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
-			{
-				for (AINBFile::InputEntry& Entry : Node.InputParameters[Type])
-				{
-					if (Entry.NodeIndex >= 0)
-					{
-						if (std::find(Node.PreconditionNodes.begin(), Node.PreconditionNodes.end(), NodeIndexToPreconditionNodeIndex[Entry.NodeIndex]) != Node.PreconditionNodes.end())
-							continue;
-
-						bool NeedsPreconditionNode = true;
-						for (AINBFile::LinkedNodeInfo& Info : this->Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::StandardLink])
-						{
-							if (Info.NodeIndex == Node.NodeIndex)
-							{
-								NeedsPreconditionNode = false;
-								break;
-							}
-						}
-
-						if (!NeedsPreconditionNode)
-							continue;
-
-						if(std::find(this->Nodes[Entry.NodeIndex].Flags.begin(), this->Nodes[Entry.NodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) != this->Nodes[Entry.NodeIndex].Flags.end())
-						{
-							continue;
-						}
-
-						uint16_t PreconditionNodeIndex = NodeIndexToPreconditionNodeIndex[Entry.NodeIndex];
-
-						Node.PreconditionNodes.push_back(PreconditionNodeIndex);
-						Node.PreconditionCount++;
-					}
-					for (AINBFile::MultiEntry& Multi : Entry.Sources)
-					{
-						if (std::find(Node.PreconditionNodes.begin(), Node.PreconditionNodes.end(), NodeIndexToPreconditionNodeIndex[Multi.NodeIndex]) != Node.PreconditionNodes.end())
-							continue;
-
-						bool NeedsPreconditionNode = true;
-						for (AINBFile::LinkedNodeInfo& Info : this->Nodes[Multi.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::StandardLink])
-						{
-							if (Info.NodeIndex == Node.NodeIndex)
-							{
-								NeedsPreconditionNode = false;
-								break;
-							}
-						}
-
-						if (!NeedsPreconditionNode)
-							continue;
-
-						if(std::find(this->Nodes[Multi.NodeIndex].Flags.begin(), this->Nodes[Multi.NodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) != this->Nodes[Multi.NodeIndex].Flags.end())
-						{
-							continue;
-						}
-
-						uint16_t PreconditionNodeIndex = NodeIndexToPreconditionNodeIndex[Multi.NodeIndex];
-
-						Node.PreconditionNodes.push_back(PreconditionNodeIndex);
-						Node.PreconditionCount++;
-					}
-				}
-			}
-			}
+			Node.PreconditionCount = Node.PreconditionNodes.size();
 			if (Node.PreconditionCount == 0)
 			{
 				Node.BasePreconditionNode = 0;
@@ -2235,6 +2187,21 @@ namespace application::file::game::ainb
 							Writer.WriteInteger(Entry.NodeIndex, sizeof(uint32_t));
 							AddToStringTable(Entry.Parameter, StringTable);
 							Writer.WriteInteger(GetOffsetInStringTable(Entry.Parameter, StringTable), sizeof(uint32_t));
+							if (Entry.HasPlugDefault)
+							{
+								if (Node.Type == (uint16_t)AINBFile::NodeTypes::Element_BoolSelector || Node.Type == (uint16_t)AINBFile::NodeTypes::Element_F32Selector)
+								{
+									// BoolSelectorInputPlug / F32SelectorInputPlug: two raw trailing words.
+									Writer.WriteInteger(Entry.PlugUnknown, sizeof(uint32_t));
+									Writer.WriteInteger(Entry.PlugUnknown2, sizeof(uint32_t));
+								}
+								else
+								{
+									// Expression's Generic plug, reusing S32SelectorInputPlug's shape.
+									Writer.WriteInteger(Entry.PlugUnknown, sizeof(uint32_t));
+									Writer.WriteInteger(Entry.PlugDefaultValueInt, sizeof(uint32_t));
+								}
+							}
 							Writer.Seek(Pos, application::util::BinaryVectorWriter::Position::Begin);
 							bool IsInput = false;
 							if (Node.Type == (uint16_t)AINBFile::NodeTypes::Element_Expression ||
@@ -2257,7 +2224,7 @@ namespace application::file::game::ainb
 								}
 							}
 
-							if (IsInput)
+							if (Entry.HasPlugDefault || IsInput)
 							{
 								Current += 16;
 							}
@@ -2291,7 +2258,28 @@ namespace application::file::game::ainb
 					{
 						for (AINBFile::LinkedNodeInfo Entry : Node.LinkedNodes[Type])
 						{
-							if (Node.Type == (int)AINBFile::NodeTypes::Element_F32Selector)
+							if (Node.Name == "SelectorBSABrainVerbUpdater" || Node.Name == "SelectorBSAFormChangeUpdater")
+							{
+								Writer.WriteInteger(Current, sizeof(uint32_t));
+								int Pos = Writer.GetPosition();
+								Writer.Seek(Current, application::util::BinaryVectorWriter::Position::Begin);
+								Writer.WriteInteger(Entry.NodeIndex, sizeof(uint32_t));
+								AddToStringTable(Entry.Parameter, StringTable);
+								Writer.WriteInteger(GetOffsetInStringTable(Entry.Parameter, StringTable), sizeof(uint32_t));
+								if (Entry.ChildEnumBBIndex != -1)
+								{
+									Writer.WriteInteger((uint32_t)Entry.ChildEnumBBIndex | (1u << 31), sizeof(uint32_t));
+									Writer.WriteInteger(0, sizeof(uint32_t));
+								}
+								else
+								{
+									Writer.WriteInteger(0, sizeof(uint32_t));
+									Writer.WriteInteger(Entry.ChildEnumValue, sizeof(uint32_t));
+								}
+								Writer.Seek(Pos, application::util::BinaryVectorWriter::Position::Begin);
+								Current += 16;
+							}
+							else if (Node.Type == (int)AINBFile::NodeTypes::Element_F32Selector)
 							{
 								Writer.WriteInteger(Current, sizeof(uint32_t));
 								int Pos = Writer.GetPosition();
@@ -2299,42 +2287,39 @@ namespace application::file::game::ainb
 								Writer.WriteInteger(Entry.NodeIndex, sizeof(uint32_t));
 								AddToStringTable("", StringTable);
 								Writer.WriteInteger(GetOffsetInStringTable("", StringTable), sizeof(uint32_t));
-								if (Node.Input.Index != 0xFFFFFFFF)
-								{
-									uint32_t Index = 0;
-									for (AINBFile::GlobalEntry GEntry : this->GlobalParameters[(int)AINBFile::GlobalType::Float])
-									{
-										if (GEntry.Index == Node.Input.Index && GEntry.Name == Node.Input.Name)
-										{
-											break;
-										}
-										Index++;
-									}
-									Writer.WriteInteger(Index | (1 << 31), sizeof(uint32_t));
-								}
-								else
-								{
-									Writer.WriteInteger(0, sizeof(uint32_t));
-								}
 
-								if(Entry.DynamicStateName != "MapEditor_AINB_NoVal")
+								bool IsDefaultEntry = Entry.DynamicStateName != "MapEditor_AINB_NoVal";
+								if (IsDefaultEntry)
 								{
+									// is_default case: name offset above, then 0x20 bytes of zero padding.
 									AddToStringTable(Entry.DynamicStateName, StringTable);
 									Writer.WriteInteger(GetOffsetInStringTable(Entry.DynamicStateName, StringTable), sizeof(uint32_t));
 								}
 								else
 								{
-									Writer.WriteRawUnsafeFixed(reinterpret_cast<char*>(&Entry.ConditionMin), sizeof(float));
-								}
-								Writer.WriteInteger(0, sizeof(uint32_t));
-								
-								if (Entry.ConditionMax != -1.0f)
-								{
-									Writer.WriteRawUnsafeFixed(reinterpret_cast<char*>(&Entry.ConditionMax), sizeof(float));
-								}
-								else
-								{
-									Writer.WriteInteger(0, sizeof(uint32_t));
+									if (Entry.ConditionMinBlackboardIndex != -1)
+									{
+										Writer.WriteInteger((uint16_t)Entry.ConditionMinBlackboardIndex, sizeof(uint16_t));
+										Writer.WriteInteger((uint16_t)0x8000, sizeof(uint16_t));
+										Writer.WriteInteger(0, sizeof(uint32_t));
+									}
+									else
+									{
+										Writer.WriteInteger(0, sizeof(uint32_t));
+										Writer.WriteRawUnsafeFixed(reinterpret_cast<char*>(&Entry.ConditionMin), sizeof(float));
+									}
+
+									if (Entry.ConditionMaxBlackboardIndex != -1)
+									{
+										Writer.WriteInteger((uint16_t)Entry.ConditionMaxBlackboardIndex, sizeof(uint16_t));
+										Writer.WriteInteger((uint16_t)0x8000, sizeof(uint16_t));
+										Writer.WriteInteger(0, sizeof(uint32_t));
+									}
+									else
+									{
+										Writer.WriteInteger(0, sizeof(uint32_t));
+										Writer.WriteRawUnsafeFixed(reinterpret_cast<char*>(&Entry.ConditionMax), sizeof(float));
+									}
 								}
 								Writer.Seek(Pos, application::util::BinaryVectorWriter::Position::Begin);
 								Current += 40;
@@ -2349,7 +2334,12 @@ namespace application::file::game::ainb
 								Writer.WriteInteger(Entry.NodeIndex, sizeof(uint32_t));
 								AddToStringTable("", StringTable);
 								Writer.WriteInteger(GetOffsetInStringTable("", StringTable), sizeof(uint32_t));
-								if (Node.Input.Index != -1)
+								if ((Node.Type == (int)AINBFile::NodeTypes::Element_S32Selector || Node.Type == (int)AINBFile::NodeTypes::Element_RandomSelector || Node.Type == (int)AINBFile::NodeTypes::Element_StringSelector) && Entry.BlackboardIndex != -1)
+								{
+									Writer.WriteInteger((uint16_t)Entry.BlackboardIndex, sizeof(uint16_t));
+									Writer.WriteInteger((uint16_t)0x8000, sizeof(uint16_t));
+								}
+								else if (Node.Input.Index != -1)
 								{
 									uint32_t Index = 0;
 									for (AINBFile::GlobalEntry GEntry : this->GlobalParameters[Node.Type])
@@ -2459,45 +2449,24 @@ namespace application::file::game::ainb
 								Writer.WriteInteger(GetOffsetInStringTable("", StringTable), sizeof(uint32_t));
 							}
 
-							if (Node.Input.Index != -1)
+							//Don't consult Node.Input here - it's StandardLink Child-plug state, unrelated to this plug
+							if (Entry.HasPlugDefault)
 							{
-								if (Node.Type == (int)AINBFile::NodeTypes::Element_StringSelector)
+								if (Type == (int)AINBFile::LinkedNodeMapping::StringInputLink)
 								{
-									uint32_t Index = 0;
-									for (AINBFile::GlobalEntry GEntry : this->GlobalParameters[(int)AINBFile::GlobalType::String])
-									{
-										if (GEntry.Index == Node.Input.Index)
-										{
-											break;
-										}
-										Index++;
-									}
-
-									Writer.WriteInteger(Index | (1 << 31), sizeof(uint32_t));
+									Writer.WriteInteger(Entry.PlugUnknown, sizeof(uint32_t));
+									AddToStringTable(Entry.PlugDefaultValueStr, StringTable);
+									Writer.WriteInteger(GetOffsetInStringTable(Entry.PlugDefaultValueStr, StringTable), sizeof(uint32_t));
 								}
-								else if (Node.Type == (int)AINBFile::NodeTypes::Element_S32Selector)
+								else if (Type == (int)AINBFile::LinkedNodeMapping::IntInputLink)
 								{
-									uint32_t Index = 0;
-									for (AINBFile::GlobalEntry GEntry : this->GlobalParameters[(int)AINBFile::GlobalType::Int])
-									{
-										if (GEntry.Index == Node.Input.Index)
-										{
-											break;
-										}
-										Index++;
-									}
-
-									Writer.WriteInteger(Index | (1 << 31), sizeof(uint32_t));
+									Writer.WriteInteger(Entry.PlugUnknown, sizeof(uint32_t));
+									Writer.WriteInteger(Entry.PlugDefaultValueInt, sizeof(uint32_t));
 								}
 							}
 							Writer.Seek(Pos, application::util::BinaryVectorWriter::Position::Begin);
 
-							if (Node.Type == (uint16_t)AINBFile::NodeTypes::Element_Expression ||
-								Node.Type == (uint16_t)AINBFile::NodeTypes::Element_S32Selector ||
-								Node.Type == (uint16_t)AINBFile::NodeTypes::Element_F32Selector ||
-								Node.Type == (uint16_t)AINBFile::NodeTypes::Element_StringSelector ||
-								Node.Type == (uint16_t)AINBFile::NodeTypes::Element_RandomSelector ||
-								Node.Type == (uint16_t)AINBFile::NodeTypes::Element_BoolSelector)
+							if (Entry.HasPlugDefault)
 							{
 								Current += 16;
 							}
@@ -2661,7 +2630,7 @@ namespace application::file::game::ainb
 				for (int i = 0; i < 6; i++)
 				{
 					Writer.WriteInteger(0, sizeof(uint32_t));
-					Writer.WriteInteger(Pos + 24, sizeof(uint32_t));
+					Writer.WriteInteger(Pos + 48, sizeof(uint32_t));
 				}
 			}
 		}
@@ -2711,6 +2680,7 @@ namespace application::file::game::ainb
 					{
 						Writer.WriteInteger(Entry.GlobalParametersIndex, sizeof(uint16_t));
 						Flags += 0x8000;
+						Flags += (Entry.VectorComponent & 3) << 10;
 					}
 					else if (Entry.EXBIndex != 0xFFFF)
 					{
@@ -2769,7 +2739,7 @@ namespace application::file::game::ainb
 		{
 			for (int i = 0; i < 6; i++)
 			{
-				Writer.WriteInteger(0, sizeof(uint32_t));
+				Writer.WriteInteger(Current, sizeof(uint32_t));
 			}
 		}
 
@@ -2832,6 +2802,7 @@ namespace application::file::game::ainb
 					{
 						Writer.WriteInteger(Entry.GlobalParametersIndex, sizeof(uint16_t));
 						Flags += 0x8000;
+						Flags += (Entry.VectorComponent & 3) << 10;
 					}
 					else if (Entry.EXBIndex != 0xFFFF)
 					{
@@ -3009,8 +2980,6 @@ namespace application::file::game::ainb
 			}
 		}
 
-		Writer.Align(8);
-
 		uint32_t EXBStart = Writer.GetPosition();
 		if (EXBFile.Loaded)
 		{
@@ -3086,17 +3055,24 @@ namespace application::file::game::ainb
 			Writer.WriteInteger(AINB.Count, sizeof(uint32_t));
 		}
 
-		//TODO: Entry Strings
 		uint32_t EntryStringsStart = Writer.GetPosition();
-		Writer.WriteInteger(0, sizeof(uint32_t)); //Entry Strings size
-
+		Writer.WriteInteger(this->EntryStrings.size(), sizeof(uint32_t));
+		for (AINBFile::EntryStringEntry& Entry : this->EntryStrings)
+		{
+			Writer.WriteInteger(Entry.NodeIndex, sizeof(uint32_t));
+			AddToStringTable(Entry.MainState, StringTable);
+			Writer.WriteInteger(GetOffsetInStringTable(Entry.MainState, StringTable), sizeof(uint32_t));
+			AddToStringTable(Entry.State, StringTable);
+			Writer.WriteInteger(GetOffsetInStringTable(Entry.State, StringTable), sizeof(uint32_t));
+		}
 		uint32_t HashStart = Writer.GetPosition();
-		Writer.WriteInteger(0x0123456789abcdef, sizeof(uint64_t)); //Setting two placeholder hashes, they are unused in game
+		Writer.WriteInteger(this->Header.BlackboardId, sizeof(uint32_t));
+		Writer.WriteInteger(this->Header.ParentBlackboardId, sizeof(uint32_t));
 
 		uint32_t ChildReplaceStart = Writer.GetPosition();
-		Writer.WriteInteger(0, sizeof(uint16_t)); //Set at rutime
 		if (!Replacements.empty())
 		{
+			Writer.WriteInteger(0, sizeof(uint16_t)); //Set at runtime
 			Writer.WriteInteger(Replacements.size(), sizeof(uint16_t));
 			uint32_t AttachCount = 0;
 			uint32_t NodeCount = 0;
@@ -3149,13 +3125,19 @@ namespace application::file::game::ainb
 				{
 					Writer.WriteInteger(Replacement.ReplacementNodeIndex, sizeof(uint16_t));
 				}
+				else
+				{
+					Writer.WriteInteger(-1, sizeof(int16_t));
+				}
 			}
 		}
 		else
 		{
-			Writer.WriteInteger(0, sizeof(uint16_t));
-			Writer.WriteInteger(-1, sizeof(int16_t));
-			Writer.WriteInteger(-1, sizeof(int16_t));
+			Writer.WriteInteger(0, sizeof(uint8_t));  // Replaced
+			Writer.WriteInteger(0, sizeof(uint8_t));  // Padding
+			Writer.WriteInteger(0, sizeof(uint16_t)); // Replace count
+			Writer.WriteInteger(-1, sizeof(int16_t)); // Post-replace node count
+			Writer.WriteInteger(-1, sizeof(int16_t)); // Post-replace attachment count
 		}
 
 		uint32_t x6cStart = Writer.GetPosition();
@@ -3186,26 +3168,21 @@ namespace application::file::game::ainb
 		Writer.WriteInteger(EXBFile.Loaded ? EXBStart : 0, sizeof(uint32_t));
 		Writer.WriteInteger(ChildReplaceStart, sizeof(uint32_t));
 		Writer.WriteInteger(PreconditionStart, sizeof(uint32_t));
-		Writer.WriteInteger(ResidentStart, sizeof(uint32_t)); //Always the same
-		Writer.Seek(8, application::util::BinaryVectorWriter::Position::Current);
-		Writer.WriteInteger(EmbedAINBStart, sizeof(uint32_t));
-		Writer.Seek(8, application::util::BinaryVectorWriter::Position::Current);
-		Writer.WriteInteger(EntryStringsStart, sizeof(uint32_t));
-		Writer.WriteInteger(x6cStart, sizeof(uint32_t));
-		Writer.WriteInteger(HashStart, sizeof(uint32_t));
+		Writer.WriteInteger(ResidentStart, sizeof(uint32_t)); // _x50
+		Writer.WriteInteger(0, sizeof(uint32_t));              // _x54
+		Writer.WriteInteger(0, sizeof(uint32_t));              // _x58
+		Writer.WriteInteger(EmbedAINBStart, sizeof(uint32_t)); // 0x5c module_offset
+		Writer.Seek(8, application::util::BinaryVectorWriter::Position::Current); // Skip 0x60 category_name_offset and 0x64 category
+		Writer.WriteInteger(EntryStringsStart, sizeof(uint32_t)); // 0x68 action_offset
+		Writer.WriteInteger(x6cStart, sizeof(uint32_t));       // 0x6c _x6c
+		Writer.WriteInteger(HashStart, sizeof(uint32_t));      // 0x70 blackboard_id_offset
 
 		Writer.Seek(20, application::util::BinaryVectorWriter::Position::Begin);
 		Writer.WriteInteger(PreconditionNodes.size(), sizeof(uint32_t));
 
 		std::vector<unsigned char> FinalData = Writer.GetData();
 
-		if (!StringTable.empty())
-		{
-			while (FinalData.back() == 0x00 && FinalData[FinalData.size() - 2] == 0x00) //Last two bytes are 0x00
-			{
-				FinalData.pop_back();
-			}
-		}
+
 
 		return FinalData;
 	}
@@ -3224,8 +3201,7 @@ namespace application::file::game::ainb
 	{
 		std::ofstream File(Path, std::ios::binary);
 		std::vector<unsigned char> Binary = this->ToBinary();
-		std::copy(Binary.cbegin(), Binary.cend(),
-			std::ostream_iterator<unsigned char>(File));
+		File.write(reinterpret_cast<const char*>(Binary.data()), Binary.size());
 		File.close();
 	}
 }
