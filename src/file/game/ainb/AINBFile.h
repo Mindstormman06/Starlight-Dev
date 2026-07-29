@@ -8,6 +8,7 @@
 #include <util/BinaryVectorWriter.h>
 #include <variant>
 #include <map>
+#include <set>
 #include <glm/vec3.hpp>
 #include "EXB.h"
 
@@ -50,6 +51,13 @@ namespace application::file::game::ainb
 			uint32_t EntryStringOffset;
 			uint32_t x6cSection;
 			uint32_t FileHashOffset;
+
+			// Stored at the position FileHashOffset points to. Not a hash - identifies this
+			// file's blackboard param table and its inheritance parent (Blackboard::Inherit
+			// Mode references these). Previously discarded on read and overwritten with a
+			// hardcoded dummy value on write.
+			uint32_t BlackboardId = 0;
+			uint32_t ParentBlackboardId = 0;
 		};
 
 		struct GUIDData
@@ -359,5 +367,23 @@ namespace application::file::game::ainb
 		InputEntry ReadInputEntry(application::util::BinaryVectorReader* Reader, int Type);
 		OutputEntry ReadOutputEntry(application::util::BinaryVectorReader* Reader, int Type);
 		bool WasLeftNodeExecutedPreviously(uint32_t NodeIndex, uint32_t TargetIndex);
+		bool WasLeftNodeExecutedPreviously(uint32_t NodeIndex, uint32_t TargetIndex, std::vector<bool>& Visited);
+
+		// Finds the flow-parent of NodeIndex (the node whose StandardLink children list
+		// includes it) and NodeIndex's position within that list. Returns false if
+		// NodeIndex has no flow-parent (e.g. it's the root node).
+		bool FindFlowParent(uint32_t NodeIndex, uint32_t& OutParentIndex, uint32_t& OutChildPosition);
+
+		// Resolves the OutputEntry for NodeIndex's output at ParameterIndex. A node's real
+		// output for a given index isn't always stored under the value-type category the
+		// referencing input expects (e.g. QueryMathVector3fIsZero's boolean result is
+		// natively stored under Int, not Bool - true of real, unmodified game files, not
+		// just edited ones), so this checks Type first, then searches the node's other
+		// categories for the same index rather than indexing out of bounds. Returns nullptr
+		// only if NodeIndex is out of range or no category has an entry at ParameterIndex.
+		OutputEntry* ResolveOutputEntry(int NodeIndex, int Type, int ParameterIndex);
+
+		// Total number of outputs NodeIndex declares across all value-type categories.
+		int GetTotalOutputCount(int NodeIndex);
 	};
 }

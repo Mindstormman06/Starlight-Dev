@@ -728,7 +728,7 @@ namespace application::file::game::ainb
 
 			if (Node.PreconditionCount > 0) {
 				for (int i = 0; i < Node.PreconditionCount; i++) {
-					Node.PreconditionNodes.push_back(this->PreconditionNodes[Node.BasePreconditionNode] + i);
+					Node.PreconditionNodes.push_back(this->PreconditionNodes[Node.BasePreconditionNode + i]);
 				}
 			}
 
@@ -1159,21 +1159,33 @@ namespace application::file::game::ainb
 		EmbeddedAinbArray
 	*/
 
-	bool AINBFile::WasLeftNodeExecutedPreviously(uint32_t NodeIndex, uint32_t TargetIndex)
+	bool AINBFile::WasLeftNodeExecutedPreviously(uint32_t NodeIndex, uint32_t TargetIndex, std::vector<bool>& Visited)
 	{
-		if(NodeIndex == TargetIndex)
+		if (NodeIndex == TargetIndex)
 		{
 			return true;
 		}
-		
-		for(AINBFile::LinkedNodeInfo& Info : this->Nodes[NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::StandardLink])
+
+		if (NodeIndex >= Visited.size() || Visited[NodeIndex])
 		{
-			if(WasLeftNodeExecutedPreviously(Info.NodeIndex, TargetIndex))
+			return false;
+		}
+		Visited[NodeIndex] = true;
+
+		for (AINBFile::LinkedNodeInfo& Info : this->Nodes[NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::StandardLink])
+		{
+			if (WasLeftNodeExecutedPreviously(Info.NodeIndex, TargetIndex, Visited))
 				return true;
 		}
 
 		return false;
-	};
+	}
+
+	bool AINBFile::WasLeftNodeExecutedPreviously(uint32_t NodeIndex, uint32_t TargetIndex)
+	{
+		std::vector<bool> Visited(this->Nodes.size(), false);
+		return WasLeftNodeExecutedPreviously(NodeIndex, TargetIndex, Visited);
+	}
 
 	std::vector<unsigned char> AINBFile::ToBinary()
 	{
@@ -1239,7 +1251,10 @@ namespace application::file::game::ainb
 
 		for (AINBFile::Command Command : this->Commands)
 		{
-			Command.GUID = BaseGUIDCommand;
+			if (Command.GUID.Part1 == 0 && Command.GUID.Part2 == 0 && Command.GUID.Part3 == 0 && Command.GUID.Part4 == 0)
+			{
+				Command.GUID = BaseGUIDCommand;
+			}
 			BaseGUIDCommand.Part1++;
 			AddToStringTable(Command.Name, StringTable);
 			Writer.WriteInteger(GetOffsetInStringTable(Command.Name, StringTable), sizeof(uint32_t));
@@ -1311,7 +1326,10 @@ namespace application::file::game::ainb
 
 		for (AINBFile::Node& Node : this->Nodes)
 		{
-			Node.GUID = BaseGUID;
+			if (Node.GUID.Part1 == 0 && Node.GUID.Part2 == 0 && Node.GUID.Part3 == 0 && Node.GUID.Part4 == 0)
+			{
+				Node.GUID = BaseGUID;
+			}
 			BaseGUID.Part1++;
 			if (Node.Name.find(".module") != std::string::npos)
 			{
@@ -1491,10 +1509,6 @@ namespace application::file::game::ainb
 
 		for (AINBFile::Node& Node : this->Nodes)
 		{
-			Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].clear();
-			Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::IntInputLink].clear();
-			Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::StringInputLink].clear();
-
 			for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
 			{
 				for (AINBFile::InputEntry& Entry : Node.InputParameters[Type])
@@ -1554,259 +1568,6 @@ namespace application::file::game::ainb
 			}
 		}
 
-		for (AINBFile::Node& Node : this->Nodes)
-		{
-			for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
-			{
-				for (AINBFile::InputEntry& Entry : Node.InputParameters[Type])
-				{
-					if (Entry.NodeIndex >= 0)
-					{
-						if(WasLeftNodeExecutedPreviously(Entry.NodeIndex, Node.NodeIndex))
-						{
-							if (Type == (int)AINBFile::ValueType::Bool || Type == (int)AINBFile::ValueType::Float)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Entry.NodeIndex;
-								Info.Parameter = Entry.Name;
-								Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-							}
-							else if(Type != (int)AINBFile::ValueType::String)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Node.NodeIndex;
-								Info.Parameter = this->Nodes[Entry.NodeIndex].OutputParameters[Type][Entry.ParameterIndex].Name;
-
-								bool SkipLink = false;
-
-								for(AINBFile::LinkedNodeInfo& LinkInfo : this->Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink])
-								{
-									if(LinkInfo.Parameter == Info.Parameter)
-									{
-										SkipLink = true;
-										break;
-									}
-								}
-
-								if(!SkipLink)
-									this->Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-							}
-						}
-						else
-						{
-							if (Type == (int)AINBFile::ValueType::Int)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Entry.NodeIndex;
-								Info.Parameter = Entry.Name;
-								Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::IntInputLink].push_back(Info);
-
-								AINBFile::LinkedNodeInfo OutputInfo;
-								OutputInfo.NodeIndex = Node.NodeIndex;
-								OutputInfo.Parameter = Nodes[Entry.NodeIndex].OutputParameters[(int)AINBFile::ValueType::Int][Entry.ParameterIndex].Name;
-								Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(OutputInfo);
-							}
-							else if (Type == (int)AINBFile::ValueType::String)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Entry.NodeIndex;
-								Info.Parameter = Entry.Name;
-								Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::StringInputLink].push_back(Info);
-							}
-							else if (Type == (int)AINBFile::ValueType::Bool || Type == (int)AINBFile::ValueType::Float)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Entry.NodeIndex;
-								Info.Parameter = Entry.Name;
-								Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-							}
-							else if (Type == (int)AINBFile::ValueType::Vec3f || Type == (int)AINBFile::ValueType::UserDefined)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Node.NodeIndex;
-								Info.Parameter = this->Nodes[Entry.NodeIndex].OutputParameters[Type][Entry.ParameterIndex].Name;
-
-								bool SkipLink = false;
-
-								for(AINBFile::LinkedNodeInfo& LinkInfo : this->Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink])
-								{
-									if(LinkInfo.Parameter == Info.Parameter)
-									{
-										SkipLink = true;
-										break;
-									}
-								}
-
-								if(!SkipLink)
-									this->Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-							}
-						}
-						/*
-						if (Type == (int)AINBFile::ValueType::Bool || Type == (int)AINBFile::ValueType::Float)
-						{
-							AINBFile::LinkedNodeInfo Info;
-							Info.NodeIndex = Entry.NodeIndex;
-							Info.Parameter = Entry.Name;
-							Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-						}
-						else if(Type != (int)AINBFile::ValueType::String)
-						{
-							AINBFile::LinkedNodeInfo Info;
-							Info.NodeIndex = Node.NodeIndex;
-							Info.Parameter = this->Nodes[Entry.NodeIndex].OutputParameters[Type][Entry.ParameterIndex].Name;
-
-							bool SkipLink = false;
-
-							for(AINBFile::LinkedNodeInfo& LinkInfo : this->Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink])
-							{
-								if(LinkInfo.Parameter == Info.Parameter)
-								{
-									SkipLink = true;
-									break;
-								}
-							}
-
-							if(!SkipLink)
-								this->Nodes[Entry.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-						}
-						
-						if (Type == (int)AINBFile::ValueType::Int)
-						{
-							AINBFile::LinkedNodeInfo Info;
-							Info.NodeIndex = Entry.NodeIndex;
-							Info.Parameter = Entry.Name;
-							Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::IntInputLink].push_back(Info);
-						}
-						*/
-						continue;
-					}
-					for (AINBFile::MultiEntry& Multi : Entry.Sources)
-					{
-						if(WasLeftNodeExecutedPreviously(Multi.NodeIndex, Node.NodeIndex))
-						{
-							if (Type == (int)AINBFile::ValueType::Bool || Type == (int)AINBFile::ValueType::Float)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Multi.NodeIndex;
-								Info.Parameter = this->Nodes[Multi.NodeIndex].OutputParameters[Type][Multi.ParameterIndex].Name;
-
-								Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-							}
-							else if(Type != (int)AINBFile::ValueType::String)
-							{
-								if(!(Type == (int)AINBFile::ValueType::Int && std::find(this->Nodes[Entry.NodeIndex].Flags.begin(), this->Nodes[Entry.NodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) != this->Nodes[Entry.NodeIndex].Flags.end()))
-								{
-									AINBFile::LinkedNodeInfo Info;
-									Info.NodeIndex = Node.NodeIndex;
-									Info.Parameter = this->Nodes[Multi.NodeIndex].OutputParameters[Entry.ValueType][Multi.ParameterIndex].Name;
-
-									bool SkipLink = false;
-
-									for(AINBFile::LinkedNodeInfo& LinkInfo : this->Nodes[Multi.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink])
-									{
-										if(LinkInfo.Parameter == Info.Parameter)
-										{
-											SkipLink = true;
-											break;
-										}
-									}
-
-									if(!SkipLink)
-										this->Nodes[Multi.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-								}
-							}
-						}
-						else
-						{
-							if (Type == (int)AINBFile::ValueType::Int)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Entry.NodeIndex;
-								Info.Parameter = Entry.Name;
-								Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::IntInputLink].push_back(Info);
-							}
-							if (Type == (int)AINBFile::ValueType::String)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Entry.NodeIndex;
-								Info.Parameter = Entry.Name;
-								Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::StringInputLink].push_back(Info);
-							}
-							else if(Type == (int)AINBFile::ValueType::Bool || Type == (int)AINBFile::ValueType::Float)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Entry.NodeIndex;
-								Info.Parameter = Entry.Name;
-								Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-							}
-							else if (Type == (int)AINBFile::ValueType::Vec3f || Type == (int)AINBFile::ValueType::UserDefined)
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Node.NodeIndex;
-								Info.Parameter = this->Nodes[Multi.NodeIndex].OutputParameters[Type][Multi.ParameterIndex].Name;
-
-								bool SkipLink = false;
-
-								for(AINBFile::LinkedNodeInfo& LinkInfo : this->Nodes[Multi.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink])
-								{
-									if(LinkInfo.Parameter == Info.Parameter)
-									{
-										SkipLink = true;
-										break;
-									}
-								}
-
-								if(!SkipLink)
-									this->Nodes[Multi.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-							}
-						}
-
-						/*
-						if (Type == (int)AINBFile::ValueType::Bool || Type == (int)AINBFile::ValueType::Float)
-						{
-							AINBFile::LinkedNodeInfo Info;
-							Info.NodeIndex = Multi.NodeIndex;
-							Info.Parameter = this->Nodes[Multi.NodeIndex].OutputParameters[Type][Multi.ParameterIndex].Name;
-
-							Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-						}
-						else if(Type != (int)AINBFile::ValueType::String)
-						{
-							if(!(Type == (int)AINBFile::ValueType::Int && std::find(this->Nodes[Entry.NodeIndex].Flags.begin(), this->Nodes[Entry.NodeIndex].Flags.end(), AINBFile::FlagsStruct::IsResidentNode) != this->Nodes[Entry.NodeIndex].Flags.end()))
-							{
-								AINBFile::LinkedNodeInfo Info;
-								Info.NodeIndex = Node.NodeIndex;
-								Info.Parameter = this->Nodes[Multi.NodeIndex].OutputParameters[Entry.ValueType][Multi.ParameterIndex].Name;
-
-								bool SkipLink = false;
-
-								for(AINBFile::LinkedNodeInfo& LinkInfo : this->Nodes[Multi.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink])
-								{
-									if(LinkInfo.Parameter == Info.Parameter)
-									{
-										SkipLink = true;
-										break;
-									}
-								}
-
-								if(!SkipLink)
-									this->Nodes[Multi.NodeIndex].LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink].push_back(Info);
-							}
-						}
-
-						if (Type == (int)AINBFile::ValueType::Int)
-						{
-							AINBFile::LinkedNodeInfo Info;
-							Info.NodeIndex = Entry.NodeIndex;
-							Info.Parameter = Entry.Name;
-							Node.LinkedNodes[(int)AINBFile::LinkedNodeMapping::IntInputLink].push_back(Info);
-						}
-						*/
-					}
-				}
-			}
-		}
-
 		std::map<uint16_t, uint16_t> NodeIndexToPreconditionNodeIndex;
 
 		uint16_t NodeIndexToPreconditionNodeIndexCount = 0;
@@ -1821,9 +1582,14 @@ namespace application::file::game::ainb
 
 		for (AINBFile::Node& Node : this->Nodes)
 		{
-			Node.PreconditionNodes.clear();
-			Node.PreconditionCount = 0;
-			for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
+			if (!Node.PreconditionNodes.empty())
+			{
+				Node.PreconditionCount = Node.PreconditionNodes.size();
+			}
+			else
+			{
+				Node.PreconditionCount = 0;
+				for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
 			{
 				for (AINBFile::InputEntry& Entry : Node.InputParameters[Type])
 				{
@@ -1884,6 +1650,7 @@ namespace application::file::game::ainb
 						Node.PreconditionCount++;
 					}
 				}
+			}
 			}
 			if (Node.PreconditionCount == 0)
 			{
@@ -2073,7 +1840,7 @@ namespace application::file::game::ainb
 		std::vector<AINBFile::ResidentEntry> Residents;
 
 		std::map<uint16_t, std::pair<uint32_t, uint32_t>> EXBInfo; //NodeIndex -> {EXBCount, EXBSize}
-		std::vector<EXB::CommandInfoStruct> EXBCommands;
+		std::vector<EXB::CommandInfoStruct> EXBCommands = this->EXBFile.Commands;
 
 		//Reconstructing EXBInfo
 		for (AINBFile::Node& Node : this->Nodes)
@@ -2184,6 +1951,11 @@ namespace application::file::game::ainb
 				{
 					if (Entry.Function.InstructionCount > 0 && Entry.Function.Instructions.size() > 0)
 					{
+						if (Entry.EXBIndex != 0xFFFF && Entry.EXBIndex < EXBCommands.size())
+						{
+							continue;
+						}
+
 						int NewEXBIndex = -1;
 						for (int i = 0; i < EXBCommands.size(); i++)
 						{
@@ -2196,6 +1968,7 @@ namespace application::file::game::ainb
 								EXBCommands[i].BaseIndexPreCommandEntry != Entry.Function.BaseIndexPreCommandEntry
 								) continue;
 
+							bool Match = true;
 							for (int j = 0; j < EXBCommands[i].Instructions.size(); j++)
 							{
 								if (EXBCommands[i].Instructions[j].DataType != Entry.Function.Instructions[j].DataType ||
@@ -2205,13 +1978,17 @@ namespace application::file::game::ainb
 									EXBCommands[i].Instructions[j].RHSSource != Entry.Function.Instructions[j].RHSSource ||
 									EXBCommands[i].Instructions[j].Signature != Entry.Function.Instructions[j].Signature ||
 									EXBCommands[i].Instructions[j].StaticMemoryIndex != Entry.Function.Instructions[j].StaticMemoryIndex ||
-									EXBCommands[i].Instructions[j].Type != Entry.Function.Instructions[j].Type) continue;
-
+									EXBCommands[i].Instructions[j].Type != Entry.Function.Instructions[j].Type)
+								{
+									Match = false;
+									break;
+								}
+							}
+							if (Match)
+							{
 								NewEXBIndex = i;
 								break;
 							}
-							if (NewEXBIndex != -1)
-								break;
 						}
 						if (NewEXBIndex == -1)
 						{
@@ -2226,6 +2003,11 @@ namespace application::file::game::ainb
 				{
 					if (Entry.Function.InstructionCount > 0 && Entry.Function.Instructions.size() > 0)
 					{
+						if (Entry.EXBIndex != 0xFFFF && Entry.EXBIndex < EXBCommands.size())
+						{
+							continue;
+						}
+
 						int NewEXBIndex = -1;
 						for (int i = 0; i < EXBCommands.size(); i++)
 						{
@@ -2238,6 +2020,7 @@ namespace application::file::game::ainb
 								EXBCommands[i].BaseIndexPreCommandEntry != Entry.Function.BaseIndexPreCommandEntry
 								) continue;
 
+							bool Match = true;
 							for (int j = 0; j < EXBCommands[i].Instructions.size(); j++)
 							{
 								if (EXBCommands[i].Instructions[j].DataType != Entry.Function.Instructions[j].DataType ||
@@ -2247,13 +2030,17 @@ namespace application::file::game::ainb
 									EXBCommands[i].Instructions[j].RHSSource != Entry.Function.Instructions[j].RHSSource ||
 									EXBCommands[i].Instructions[j].Signature != Entry.Function.Instructions[j].Signature ||
 									EXBCommands[i].Instructions[j].StaticMemoryIndex != Entry.Function.Instructions[j].StaticMemoryIndex ||
-									EXBCommands[i].Instructions[j].Type != Entry.Function.Instructions[j].Type) continue;
-
+									EXBCommands[i].Instructions[j].Type != Entry.Function.Instructions[j].Type)
+								{
+									Match = false;
+									break;
+								}
+							}
+							if (Match)
+							{
 								NewEXBIndex = i;
 								break;
 							}
-							if (NewEXBIndex != -1)
-								break;
 						}
 						if (NewEXBIndex == -1)
 						{
@@ -2618,7 +2405,7 @@ namespace application::file::game::ainb
 								int Pos = Writer.GetPosition();
 								Writer.Seek(Current, application::util::BinaryVectorWriter::Position::Begin);
 								Writer.WriteInteger(Entry.NodeIndex, sizeof(uint32_t));
-								if (Entry.ConnectionName != "MapEditor_AINB_NoVal")
+								if (Entry.ConnectionName != "MapEditor_AINB_NoVal" && Entry.ConnectionName != this->Header.FileName)
 								{
 									AddToStringTable(Entry.ConnectionName, StringTable);
 									Writer.WriteInteger(GetOffsetInStringTable(Entry.ConnectionName, StringTable), sizeof(uint32_t));
@@ -2627,6 +2414,11 @@ namespace application::file::game::ainb
 								{
 									AddToStringTable(Entry.Condition, StringTable);
 									Writer.WriteInteger(GetOffsetInStringTable(Entry.Condition, StringTable), sizeof(uint32_t));
+								}
+								else
+								{
+									AddToStringTable("", StringTable);
+									Writer.WriteInteger(GetOffsetInStringTable("", StringTable), sizeof(uint32_t));
 								}
 								Writer.Seek(Pos, application::util::BinaryVectorWriter::Position::Begin);
 								Current += 8;
@@ -2651,20 +2443,20 @@ namespace application::file::game::ainb
 							int Pos = Writer.GetPosition();
 							Writer.Seek(Current, application::util::BinaryVectorWriter::Position::Begin);
 							Writer.WriteInteger(Entry.NodeIndex, sizeof(uint32_t));
-							if (Entry.Condition != "MapEditor_AINB_NoVal")
+							if (Entry.Condition != "MapEditor_AINB_NoVal" && Entry.Condition != this->Header.FileName)
 							{
 								AddToStringTable(Entry.Condition, StringTable);
 								Writer.WriteInteger(GetOffsetInStringTable(Entry.Condition, StringTable), sizeof(uint32_t));
 							}
-							else if (Entry.Parameter != "")
+							else if (Entry.Parameter != "" && Entry.Parameter != this->Header.FileName)
 							{
 								AddToStringTable(Entry.Parameter, StringTable);
 								Writer.WriteInteger(GetOffsetInStringTable(Entry.Parameter, StringTable), sizeof(uint32_t));
 							}
 							else
 							{
-								AddToStringTable(Entry.ConnectionName, StringTable);
-								Writer.WriteInteger(GetOffsetInStringTable(Entry.ConnectionName, StringTable), sizeof(uint32_t));
+								AddToStringTable("", StringTable);
+								Writer.WriteInteger(GetOffsetInStringTable("", StringTable), sizeof(uint32_t));
 							}
 
 							if (Node.Input.Index != -1)
@@ -2958,8 +2750,10 @@ namespace application::file::game::ainb
 					}
 					else if (Type == (int)AINBFile::ValueType::String)
 					{
-						AddToStringTable(*reinterpret_cast<std::string*>(&Entry.Value), StringTable);
-						Writer.WriteInteger(GetOffsetInStringTable(*reinterpret_cast<std::string*>(&Entry.Value), StringTable), sizeof(uint32_t));
+						std::string Val = *reinterpret_cast<std::string*>(&Entry.Value);
+						if (Val == "MapEditor_AINB_NoVal" || Val == this->Header.FileName) Val = "";
+						AddToStringTable(Val, StringTable);
+						Writer.WriteInteger(GetOffsetInStringTable(Val, StringTable), sizeof(uint32_t));
 					}
 					else if (Type == (int)AINBFile::ValueType::Vec3f)
 					{
@@ -3079,8 +2873,10 @@ namespace application::file::game::ainb
 					}
 					else if (Type == (int)AINBFile::ValueType::String)
 					{
-						AddToStringTable(*reinterpret_cast<std::string*>(&Entry.Value), StringTable);
-						Writer.WriteInteger(GetOffsetInStringTable(*reinterpret_cast<std::string*>(&Entry.Value), StringTable), sizeof(uint32_t));
+						std::string Val = *reinterpret_cast<std::string*>(&Entry.Value);
+						if (Val == "MapEditor_AINB_NoVal" || Val == this->Header.FileName) Val = "";
+						AddToStringTable(Val, StringTable);
+						Writer.WriteInteger(GetOffsetInStringTable(Val, StringTable), sizeof(uint32_t));
 					}
 					else if (Type == (int)AINBFile::ValueType::Vec3f)
 					{
