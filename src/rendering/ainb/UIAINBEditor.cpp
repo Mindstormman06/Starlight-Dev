@@ -730,15 +730,23 @@ namespace application::rendering::ainb
 			{
 				for (application::file::game::ainb::AINBFile::InputEntry& Entry : mAINBFile.Nodes[i].InputParameters[j]) 
 				{
-					if (Entry.NodeIndex >= 0) 
+					if (Entry.NodeIndex >= 0)
 					{
-						mNodes[Entry.NodeIndex]->mLinkedOutputParams[j].push_back(Entry.ParameterIndex);
-					}
-					else 
-					{
-						for (application::file::game::ainb::AINBFile::MultiEntry& Multi : Entry.Sources) 
+						auto Resolved = application::rendering::ainb::UIAINBEditorNodeBase::ResolveLinkedOutputPin(mNodes, Entry.NodeIndex, (uint8_t)j, Entry.ParameterIndex);
+						if (Resolved.Valid)
 						{
-							mNodes[Multi.NodeIndex]->mLinkedOutputParams[j].push_back(Multi.ParameterIndex);
+							mNodes[Entry.NodeIndex]->mLinkedOutputParams[Resolved.Category].push_back(Entry.ParameterIndex);
+						}
+					}
+					else
+					{
+						for (application::file::game::ainb::AINBFile::MultiEntry& Multi : Entry.Sources)
+						{
+							auto Resolved = application::rendering::ainb::UIAINBEditorNodeBase::ResolveLinkedOutputPin(mNodes, Multi.NodeIndex, (uint8_t)j, Multi.ParameterIndex);
+							if (Resolved.Valid)
+							{
+								mNodes[Multi.NodeIndex]->mLinkedOutputParams[Resolved.Category].push_back(Multi.ParameterIndex);
+							}
 						}
 					}
 				}
@@ -1331,6 +1339,20 @@ namespace application::rendering::ainb
 		}
 
 		ed::End();
+
+		uint32_t HoveredLinkId = ed::GetHoveredLink().Get();
+		if (HoveredLinkId != 0)
+		{
+			for (std::unique_ptr<UIAINBEditorNodeBase>& Node : mNodes)
+			{
+				auto LinkIter = Node->mLinks.find(HoveredLinkId);
+				if (LinkIter != Node->mLinks.end() && LinkIter->second.mCrossCategory)
+				{
+					ImGui::SetTooltip("This link's source output isn't stored under the value type this input expects. Starlight found it by checking the node's other types.\nThis can be a perfectly valid connection (some real game nodes work this way), but it isn't guaranteed safe for every node combination.\nIf the graph misbehaves in-game, double check this connection.");
+					break;
+				}
+			}
+		}
 
 		if (mAINBPath.empty())
 			ImGui::EndDisabled();

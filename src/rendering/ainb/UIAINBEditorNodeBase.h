@@ -53,6 +53,16 @@ namespace application::rendering::ainb
 			LinkType mType;
 			uint16_t mNodeIndex;
 			uint16_t mParameterIndex;
+			bool mCrossCategory = false; // source output was only found by searching outside the input's own value-type category
+		};
+
+		// Result of looking up the editor pin id for a node's output parameter reference.
+		struct ResolvedOutputPin
+		{
+			bool Valid = false;
+			bool CrossCategory = false; // pin was only found by searching outside the requested category
+			uint8_t Category = 0; // the value-type category that actually contains this output on the target node
+			uint32_t PinId = 0;
 		};
 
 		UIAINBEditorNodeBase(int UniqueId, application::file::game::ainb::AINBFile::Node& Node);
@@ -87,6 +97,24 @@ namespace application::rendering::ainb
 		virtual void PostProcessLinkedNodeInfo(Pin& StartPin, application::file::game::ainb::AINBFile::LinkedNodeInfo& Info) {}
 		virtual bool FinalizeNode() { return true; }
 		virtual bool HasFlowOutputParameters() = 0;
+
+		// Resolves the editor pin id for NodeIndex's output at ParameterIndex. AINB output
+		// parameters are grouped into 6 value-type categories, but a node's real output for
+		// a given index isn't always in the category the consuming input happens to be
+		// declared under (e.g. QueryMathVector3fIsZero's boolean result is natively stored
+		// under Int, not Bool, and the game runs graphs that wire it straight into Bool
+		// inputs without complaint) - Category is only a starting guess. This checks it
+		// first, then searches the node's other categories for the same index, so a
+		// same-node reference is always found regardless of which category holds it.
+		// Returns Valid = false only if NodeIndex is out of range or truly no category has
+		// an entry at ParameterIndex at all.
+		static ResolvedOutputPin ResolveLinkedOutputPin(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes, int NodeIndex, uint8_t Category, int ParameterIndex);
+
+		// Shared implementation of the per-value-type Input/Multi parameter link rendering
+		// used by every node type that has value parameters (Default, BoolSelector,
+		// S32Selector, F32Selector). CurrentLinkId is threaded through by reference since
+		// callers may have already consumed ids for their own flow links.
+		void RenderParameterLinks(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes, uint32_t& CurrentLinkId);
 
 		int mUniqueId = 0;
 		int mNodeId;

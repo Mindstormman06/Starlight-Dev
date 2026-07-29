@@ -15,6 +15,116 @@ namespace application::rendering::ainb
         mLinkedOutputParams.resize(6);
 	}
 
+    UIAINBEditorNodeBase::ResolvedOutputPin UIAINBEditorNodeBase::ResolveLinkedOutputPin(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes, int NodeIndex, uint8_t Category, int ParameterIndex)
+    {
+        ResolvedOutputPin Result;
+
+        if (NodeIndex < 0 || (size_t)NodeIndex >= Nodes.size() || ParameterIndex < 0)
+            return Result;
+
+        UIAINBEditorNodeBase* Target = Nodes[NodeIndex].get();
+
+        if (Category < Target->mOutputParameters.size() && (size_t)ParameterIndex < Target->mOutputParameters[Category].size())
+        {
+            Result.Valid = true;
+            Result.Category = Category;
+            Result.PinId = Target->mOutputParameters[Category][ParameterIndex];
+            return Result;
+        }
+
+        for (uint8_t OtherCategory = 0; OtherCategory < Target->mOutputParameters.size(); OtherCategory++)
+        {
+            if (OtherCategory == Category)
+                continue;
+
+            if ((size_t)ParameterIndex < Target->mOutputParameters[OtherCategory].size())
+            {
+                Result.Valid = true;
+                Result.CrossCategory = true;
+                Result.Category = OtherCategory;
+                Result.PinId = Target->mOutputParameters[OtherCategory][ParameterIndex];
+                return Result;
+            }
+        }
+
+        return Result;
+    }
+
+    // Yellow used only for links whose source output lives in a different value-type category
+    // than the consuming input expects - not necessarily broken (real game nodes do this), but
+    // worth a second look, so it gets a caution color and a hover tooltip rather than looking
+    // identical to an ordinary link.
+    static const ImColor kCrossCategoryLinkColor = ImColor(235, 200, 40);
+
+    void UIAINBEditorNodeBase::RenderParameterLinks(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes, uint32_t& CurrentLinkId)
+    {
+        for (uint8_t i = 0; i < application::file::game::ainb::AINBFile::ValueTypeCount; i++)
+        {
+            for (uint16_t j = 0; j < mNode->InputParameters[i].size(); j++)
+            {
+                application::file::game::ainb::AINBFile::InputEntry& Input = mNode->InputParameters[i][j];
+                if (Input.NodeIndex >= 0) //Single link
+                {
+                    uint8_t SourceCategory = i;
+                    if (!Input.Function.Instructions.empty())
+                    {
+                        application::file::game::ainb::AINBFile::ValueType DataType;
+                        switch (Input.Function.InputDataType)
+                        {
+                        case application::file::game::ainb::EXB::Type::Bool:
+                            DataType = application::file::game::ainb::AINBFile::ValueType::Bool;
+                            break;
+                        case application::file::game::ainb::EXB::Type::F32:
+                            DataType = application::file::game::ainb::AINBFile::ValueType::Float;
+                            break;
+                        case application::file::game::ainb::EXB::Type::S32:
+                            DataType = application::file::game::ainb::AINBFile::ValueType::Int;
+                            break;
+                        case application::file::game::ainb::EXB::Type::String:
+                            DataType = application::file::game::ainb::AINBFile::ValueType::String;
+                            break;
+                        case application::file::game::ainb::EXB::Type::Vec3f:
+                            DataType = application::file::game::ainb::AINBFile::ValueType::Vec3f;
+                            break;
+                        default:
+                            DataType = (application::file::game::ainb::AINBFile::ValueType)i;
+                        }
+
+                        SourceCategory = (uint8_t)DataType;
+                    }
+
+                    ResolvedOutputPin Resolved = ResolveLinkedOutputPin(Nodes, Input.NodeIndex, SourceCategory, Input.ParameterIndex);
+
+                    uint32_t LinkId = CurrentLinkId++;
+                    mLinks.insert({ LinkId, Link {.mObjectPtr = &Input, .mType = LinkType::Parameter, .mNodeIndex = (uint16_t)Input.NodeIndex, .mParameterIndex = (uint16_t)Input.ParameterIndex, .mCrossCategory = Resolved.CrossCategory } });
+
+                    if (Resolved.Valid)
+                    {
+                        ed::Link(LinkId, Resolved.PinId, mInputParameters[i][j], Resolved.CrossCategory ? kCrossCategoryLinkColor : GetValueTypeColor(i));
+                    }
+                    else
+                    {
+                        application::util::Logger::Warning("UIAINBEditorNodeBase", "Node %d input '%s' references node %d output %d, which doesn't exist under any value type category - link skipped", mNode->NodeIndex, Input.Name.c_str(), Input.NodeIndex, Input.ParameterIndex);
+                    }
+                }
+                for (application::file::game::ainb::AINBFile::MultiEntry& Entry : Input.Sources) // Multi link
+                {
+                    ResolvedOutputPin Resolved = ResolveLinkedOutputPin(Nodes, Entry.NodeIndex, i, Entry.ParameterIndex);
+                    if (Resolved.Valid)
+                    {
+                        uint32_t LinkId = CurrentLinkId++;
+                        ed::Link(LinkId, Resolved.PinId, mInputParameters[i][j], Resolved.CrossCategory ? kCrossCategoryLinkColor : GetValueTypeColor(i));
+                        mLinks.insert({ LinkId, Link {.mObjectPtr = &Input, .mType = LinkType::Parameter, .mNodeIndex = Entry.NodeIndex, .mParameterIndex = Entry.ParameterIndex, .mCrossCategory = Resolved.CrossCategory } });
+                    }
+                    else
+                    {
+                        application::util::Logger::Warning("UIAINBEditorNodeBase", "Node %d input '%s' multi-source references node %d output %d, which doesn't exist under any value type category - link skipped", mNode->NodeIndex, Input.Name.c_str(), Entry.NodeIndex, Entry.ParameterIndex);
+                    }
+                }
+            }
+        }
+    }
+
     void UIAINBEditorNodeBase::Reset()
     {
         for (uint8_t i = 0; i < application::file::game::ainb::AINBFile::ValueTypeCount; i++) {

@@ -90,54 +90,7 @@ namespace application::rendering::ainb::nodes
 	void UIAINBEditorNodeDefault::RenderLinks(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes)
 	{
         uint32_t CurrentLinkId = mNodeId + 500; //Link start at +500
-        for (uint8_t i = 0; i < application::file::game::ainb::AINBFile::ValueTypeCount; i++)
-        {
-            for (uint16_t j = 0; j < mNode->InputParameters[i].size(); j++)
-            {
-                application::file::game::ainb::AINBFile::InputEntry& Input = mNode->InputParameters[i][j];
-                if (Input.NodeIndex >= 0) //Single link
-                {
-                    //ed::Link(CurrentLinkId++, Nodes[Input.NodeIndex]->mOutputParameters[i][Input.ParameterIndex], mInputParameters[i][j], GetValueTypeColor(i));
-                    mLinks.insert({ CurrentLinkId++, Link {.mObjectPtr = &Input, .mType = LinkType::Parameter, .mNodeIndex = (uint16_t)Input.NodeIndex, .mParameterIndex = (uint16_t)Input.ParameterIndex } });
-
-                    if (!Input.Function.Instructions.empty())
-                    {
-                        application::file::game::ainb::AINBFile::ValueType DataType;
-                        switch (Input.Function.InputDataType)
-                        {
-                        case application::file::game::ainb::EXB::Type::Bool:
-                            DataType = application::file::game::ainb::AINBFile::ValueType::Bool;
-                            break;
-                        case application::file::game::ainb::EXB::Type::F32:
-                            DataType = application::file::game::ainb::AINBFile::ValueType::Float;
-                            break;
-                        case application::file::game::ainb::EXB::Type::S32:
-                            DataType = application::file::game::ainb::AINBFile::ValueType::Int;
-                            break;
-                        case application::file::game::ainb::EXB::Type::String:
-                            DataType = application::file::game::ainb::AINBFile::ValueType::String;
-                            break;
-                        case application::file::game::ainb::EXB::Type::Vec3f:
-                            DataType = application::file::game::ainb::AINBFile::ValueType::Vec3f;
-                            break;
-                        default:
-                            DataType = (application::file::game::ainb::AINBFile::ValueType)i;
-                        }
-
-                        ed::Link(CurrentLinkId - 1, Nodes[Input.NodeIndex]->mOutputParameters[(int)DataType][Input.ParameterIndex], mInputParameters[i][j], GetValueTypeColor(i));
-                    }
-                    else
-                    {
-                        ed::Link(CurrentLinkId - 1, Nodes[Input.NodeIndex]->mOutputParameters[i][Input.ParameterIndex], mInputParameters[i][j], GetValueTypeColor(i));
-                    }
-                }
-                for (application::file::game::ainb::AINBFile::MultiEntry& Entry : Input.Sources) // Multi link
-                {
-                    ed::Link(CurrentLinkId++, Nodes[Entry.NodeIndex]->mOutputParameters[i][Entry.ParameterIndex], mInputParameters[i][j], GetValueTypeColor(i));
-                    mLinks.insert({ CurrentLinkId - 1, Link {.mObjectPtr = &Input, .mType = LinkType::Parameter, .mNodeIndex = Entry.NodeIndex, .mParameterIndex = Entry.ParameterIndex } });
-                }
-            }
-        }
+        RenderParameterLinks(Nodes, CurrentLinkId);
 
         for (int i = 0; i < mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size(); i++) {
             if (mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink][i].NodeIndex == -1 || mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink][i].NodeIndex >= Nodes.size())
