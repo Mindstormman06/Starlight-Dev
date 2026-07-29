@@ -88,3 +88,5 @@ Testing/
 .cache/
 
 .DS_Store
+
+test/
