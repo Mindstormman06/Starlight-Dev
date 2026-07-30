@@ -1561,6 +1561,8 @@ namespace application::rendering::ainb
 					{
 						Iter->NodeIndex--;
 					}
+					if (Iter->ReplacementNodeIndex == (uint16_t)NodeIndex) Iter->ReplacementNodeIndex = 0xFFFF;
+					else if (Iter->ReplacementNodeIndex != 0xFFFF && Iter->ReplacementNodeIndex > NodeIndex) Iter->ReplacementNodeIndex--;
 					Iter++;
 				}
 			}
@@ -1577,6 +1579,28 @@ namespace application::rendering::ainb
 				}
 				Iter++;
 			}
+		}
+
+		// Commands/EntryStrings/Replacements also hold node indices and must shift too.
+		for (auto& Cmd : mAINBFile.Commands)
+		{
+			if (Cmd.LeftNodeIndex == (int16_t)NodeIndex) Cmd.LeftNodeIndex = -1;
+			else if (Cmd.LeftNodeIndex > (int16_t)NodeIndex) Cmd.LeftNodeIndex--;
+
+			if (Cmd.RightNodeIndex == (int16_t)NodeIndex) Cmd.RightNodeIndex = -1;
+			else if (Cmd.RightNodeIndex > (int16_t)NodeIndex) Cmd.RightNodeIndex--;
+		}
+		for (auto Iter = mAINBFile.EntryStrings.begin(); Iter != mAINBFile.EntryStrings.end(); )
+		{
+			if (Iter->NodeIndex == NodeIndex) { Iter = mAINBFile.EntryStrings.erase(Iter); continue; }
+			if (Iter->NodeIndex > NodeIndex) Iter->NodeIndex--;
+			Iter++;
+		}
+		for (auto Iter = mAINBFile.Replacements.begin(); Iter != mAINBFile.Replacements.end(); )
+		{
+			if (Iter->NodeIndex == NodeIndex) { Iter = mAINBFile.Replacements.erase(Iter); continue; }
+			if (Iter->NodeIndex > NodeIndex) Iter->NodeIndex--;
+			Iter++;
 		}
 
 		//Updating node indices
