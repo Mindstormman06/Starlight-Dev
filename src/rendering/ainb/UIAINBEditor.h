@@ -150,6 +150,7 @@ namespace application::rendering::ainb
 		void Undo();
 		void Redo();
 
+		void AutoLayoutEnforceDataLinkDirection(std::vector<VisualNode>& AllNodes);
 		void AutoLayoutGreedyCollisionResolve(std::vector<VisualNode>& AllNodes);
 		int32_t AutoLayoutCalcNodeWidth(VisualNode& Node);
 		void AutoLayoutCalcTreeHeight(VisualNode* n, std::vector<VisualNode*>& Visited, std::vector<VisualNode>& Nodes);

@@ -1125,7 +1125,10 @@ namespace application::manager
                             if (ImGui::BeginTabItem("AINB"))
                             {
                                 ImGui::NewLine();
-                                ImGui::Checkbox("Enable culling optimzation for low end devices", &application::rendering::ainb::UIAINBEditor::gEnableCullingOptimization);
+                                if (ImGui::Checkbox("Enable culling optimzation for low end devices", &application::rendering::ainb::UIAINBEditor::gEnableCullingOptimization))
+                                {
+                                    application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
+                                }
 
                                 ImGui::EndTabItem();
                             }

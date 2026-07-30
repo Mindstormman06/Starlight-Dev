@@ -2171,9 +2171,59 @@ namespace application::rendering::ainb
 		ImGui::End();
 	}
 
+	void UIAINBEditor::AutoLayoutEnforceDataLinkDirection(std::vector<VisualNode>& AllNodes)
+	{
+		const int32_t HorizontalGap = 150;
+		bool Changed = true;
+		int32_t Iterations = 0;
+		const int32_t MaxIterations = 1000;
+
+		while (Changed && Iterations < MaxIterations)
+		{
+			Changed = false;
+			Iterations++;
+
+			for (VisualNode& Node : AllNodes)
+			{
+				if (!Node.mPtr) continue;
+
+				// Enforce Data Providers are strictly to the left of their consumer
+				for (uint32_t Type = 0; Type < application::file::game::ainb::AINBFile::ValueTypeCount; Type++)
+				{
+					for (const auto& Param : Node.mPtr->InputParameters[Type])
+					{
+						if (Param.NodeIndex > 0 && Param.NodeIndex < AllNodes.size())
+						{
+							VisualNode& Provider = AllNodes[Param.NodeIndex];
+							int32_t TargetX = Node.mX - Provider.mWidth - HorizontalGap;
+							if (Provider.mX > TargetX)
+							{
+								Provider.mX = TargetX;
+								Changed = true;
+							}
+						}
+						for (const auto& Source : Param.Sources)
+						{
+							if (Source.NodeIndex > 0 && Source.NodeIndex < AllNodes.size())
+							{
+								VisualNode& Provider = AllNodes[Source.NodeIndex];
+								int32_t TargetX = Node.mX - Provider.mWidth - HorizontalGap;
+								if (Provider.mX > TargetX)
+								{
+									Provider.mX = TargetX;
+									Changed = true;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	void UIAINBEditor::AutoLayoutGreedyCollisionResolve(std::vector<VisualNode>& AllNodes)
 	{
-		const int32_t Margin = 20;
+		const int32_t Margin = 13;
 		const int32_t MaxIterations = 100;  // Increased from 10
 		bool HadCollision = true;
 		int32_t Iterations = 0;
@@ -2226,7 +2276,7 @@ namespace application::rendering::ainb
 
 		Visited.push_back(n);
 
-		const int32_t NodeMargin = 100;
+		const int32_t NodeMargin = 20;
 		const float PinHeight = (24.0f * ImGui::GetPlatformIO().Monitors[0].DpiScale);
 
 		// Calculate actual node height
@@ -2252,7 +2302,7 @@ namespace application::rendering::ainb
 		n->mHeight = h + NodeMargin;
 
 		// Calculate total height needed for all children
-		const int32_t NodeSeparation = 80;
+		const int32_t NodeSeparation = 20;
 		uint32_t childH = 0;
 		uint32_t childCount = 0;
 
@@ -2454,7 +2504,7 @@ namespace application::rendering::ainb
 		n->mY = finalY;
 		Bounds.push_back(glm::vec4(n->mX, n->mY, n->mWidth, n->mHeight));
 
-		const int32_t HorizontalSpacing = 800;
+		const int32_t HorizontalGap = 150;
 
 		// Place data providers first (going left)
 		for (uint32_t Type = 0; Type < application::file::game::ainb::AINBFile::ValueTypeCount; Type++)
@@ -2466,7 +2516,7 @@ namespace application::rendering::ainb
 					VisualNode* Node = &Nodes[Param.NodeIndex];
 					if (std::find(Placed.begin(), Placed.end(), Node) == Placed.end())
 					{
-						AutoLayoutPlaceSubtree(Node, x - HorizontalSpacing, finalY + Node->_mRelY, Placed, Bounds, Nodes);
+						AutoLayoutPlaceSubtree(Node, x - Node->mWidth - HorizontalGap, finalY + Node->_mRelY, Placed, Bounds, Nodes);
 					}
 				}
 				else if (!Param.Sources.empty())
@@ -2478,7 +2528,7 @@ namespace application::rendering::ainb
 							VisualNode* Node = &Nodes[Source.NodeIndex];
 							if (std::find(Placed.begin(), Placed.end(), Node) == Placed.end())
 							{
-								AutoLayoutPlaceSubtree(Node, x - HorizontalSpacing, finalY + Node->_mRelY, Placed, Bounds, Nodes);
+								AutoLayoutPlaceSubtree(Node, x - Node->mWidth - HorizontalGap, finalY + Node->_mRelY, Placed, Bounds, Nodes);
 							}
 						}
 					}
@@ -2498,7 +2548,7 @@ namespace application::rendering::ainb
 				}
 				if (std::find(Placed.begin(), Placed.end(), &Nodes[Child.NodeIndex]) == Placed.end())
 				{
-					AutoLayoutPlaceSubtree(&Nodes[Child.NodeIndex], x + HorizontalSpacing, finalY + Nodes[Child.NodeIndex]._mRelY, Placed, Bounds, Nodes);
+					AutoLayoutPlaceSubtree(&Nodes[Child.NodeIndex], x + n->mWidth + HorizontalGap, finalY + Nodes[Child.NodeIndex]._mRelY, Placed, Bounds, Nodes);
 				}
 			}
 		}
@@ -2543,7 +2593,7 @@ namespace application::rendering::ainb
 
 			if (ConsumesFromN)
 			{
-				AutoLayoutPlaceSubtree(Consumer, x + HorizontalSpacing, finalY, Placed, Bounds, Nodes);
+				AutoLayoutPlaceSubtree(Consumer, x + n->mWidth + HorizontalGap, finalY, Placed, Bounds, Nodes);
 			}
 		}
 	}
@@ -2585,7 +2635,7 @@ namespace application::rendering::ainb
 		}
 
 		int32_t CurrentGroupY = 100;
-		const int32_t GroupVerticalSpacing = 400;
+		const int32_t GroupVerticalSpacing = 100;
 
 		for (CommandGroup& Group : CommandGroups)
 		{
@@ -2691,6 +2741,7 @@ namespace application::rendering::ainb
 
 		AutoLayoutResolveGroupCollisions(CommandGroups);
 
+		AutoLayoutEnforceDataLinkDirection(VisualNodes);
 		AutoLayoutGreedyCollisionResolve(VisualNodes);
 
 		for (size_t i = 0; i < VisualNodes.size(); i++)
