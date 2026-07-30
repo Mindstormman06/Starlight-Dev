@@ -95,12 +95,12 @@ namespace application::manager
             Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
                 .mName = "EndPolicy",
                 .mClass = "",
-                .mValueType = application::file::game::ainb::AINBFile::ValueType::String
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Int
             });
             Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
                 .mName = "ResultPolicy",
                 .mClass = "",
-                .mValueType = application::file::game::ainb::AINBFile::ValueType::String
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Int
             });
             Def.mFlowOutputParameters.push_back("Control");
             Def.mCategories.push_back(AINBNodeMgr::NodeDef::Category::AI);
