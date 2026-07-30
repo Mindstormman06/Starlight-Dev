@@ -1,7 +1,5 @@
 #include "UIAINBEditorNodeSimultaneous.h"
 
-#include <util/Logger.h>
-
 namespace application::rendering::ainb::nodes
 {
 	UIAINBEditorNodeSimultaneous::UIAINBEditorNodeSimultaneous(int UniqueId, application::file::game::ainb::AINBFile::Node& Node) : UIAINBEditorNodeBase(UniqueId, Node)
@@ -80,15 +78,8 @@ namespace application::rendering::ainb::nodes
         return mNode->NodeIndex;
     }
 
-    //Ensure that at least two nodes are linked
     bool UIAINBEditorNodeSimultaneous::FinalizeNode()
     {
-        if(mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size() < 2)
-        {
-            application::util::Logger::Error("UIAINBEditorNodeSimultaneous", "The Simultanous Node with index %u needs at least two output flow links", mNode->NodeIndex);
-            return false;
-        }
-
         return true;
     }
 
