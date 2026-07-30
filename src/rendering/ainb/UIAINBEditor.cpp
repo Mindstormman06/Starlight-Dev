@@ -21,6 +21,7 @@
 #include <rendering/ainb/nodes/UIAINBEditorNodeBoolSelector.h>
 #include <rendering/ainb/nodes/UIAINBEditorNodeS32Selector.h>
 #include <rendering/ainb/nodes/UIAINBEditorNodeF32Selector.h>
+#include <rendering/ainb/nodes/UIAINBEditorNodeStringSelector.h>
 
 namespace application::rendering::ainb
 {
@@ -39,6 +40,8 @@ namespace application::rendering::ainb
 	void UIAINBEditor::Initialize()
 	{
 		application::rendering::ainb::nodes::UIAINBEditorNodeS32Selector::Initialize();
+		application::rendering::ainb::nodes::UIAINBEditorNodeF32Selector::Initialize();
+		application::rendering::ainb::nodes::UIAINBEditorNodeStringSelector::Initialize();
 
 		gCreateNewNodePopUp
 			.Title("Create new node")
@@ -429,12 +432,20 @@ namespace application::rendering::ainb
 			mNodes.push_back(std::make_unique<nodes::UIAINBEditorNodeS32Selector>(mNodeEditorUniqueId, *Node));
 			mNodeEditorUniqueId += 1000;
 			break;
-		/*
 		case (uint16_t)application::file::game::ainb::AINBFile::NodeTypes::Element_F32Selector:
 			mNodes.push_back(std::make_unique<nodes::UIAINBEditorNodeF32Selector>(mNodeEditorUniqueId, *Node));
 			mNodeEditorUniqueId += 1000;
 			break;
-		*/
+		case (uint16_t)application::file::game::ainb::AINBFile::NodeTypes::Element_StringSelector:
+			mNodes.push_back(std::make_unique<nodes::UIAINBEditorNodeStringSelector>(mNodeEditorUniqueId, *Node));
+			mNodeEditorUniqueId += 1000;
+			break;
+		case (uint16_t)application::file::game::ainb::AINBFile::NodeTypes::Element_Expression:
+			// No Selector-style Child branches to model - Expression's children are plain
+			// flow links, same as UserDefined, so the generic node class covers it.
+			mNodes.push_back(std::make_unique<nodes::UIAINBEditorNodeDefault>(mNodeEditorUniqueId, *Node));
+			mNodeEditorUniqueId += 1000;
+			break;
 		default:
 			application::util::Logger::Error("UIAINBEditor", "Unknown node type: %u", Node->Type);
 			mNodes.push_back(std::make_unique<nodes::UIAINBEditorNodeDefault>(mNodeEditorUniqueId, *Node));
@@ -788,6 +799,40 @@ namespace application::rendering::ainb
 		ImGui::End();
 	}
 
+	// Resolves which value-type category actually holds NodeIndex's output at ParameterIndex,
+	// straight from AINBFile::Node data rather than the editor's per-frame pin-id cache (which
+	// isn't populated yet the first time this needs to run, before any node has been drawn this
+	// frame - see its call site below). Same category-then-cross-category search as
+	// UIAINBEditorNodeBase::ResolveLinkedOutputPin, which needs the cache since it also resolves
+	// an actual pin id, not just which category the output lives in.
+	static bool ResolveOutputCategory(application::file::game::ainb::AINBFile& File, int NodeIndex, uint8_t Category, int ParameterIndex, uint8_t& OutCategory)
+	{
+		if (NodeIndex < 0 || (size_t)NodeIndex >= File.Nodes.size() || ParameterIndex < 0)
+			return false;
+
+		application::file::game::ainb::AINBFile::Node& Target = File.Nodes[NodeIndex];
+
+		if (Category < application::file::game::ainb::AINBFile::ValueTypeCount && (size_t)ParameterIndex < Target.OutputParameters[Category].size())
+		{
+			OutCategory = Category;
+			return true;
+		}
+
+		for (uint8_t OtherCategory = 0; OtherCategory < application::file::game::ainb::AINBFile::ValueTypeCount; OtherCategory++)
+		{
+			if (OtherCategory == Category)
+				continue;
+
+			if ((size_t)ParameterIndex < Target.OutputParameters[OtherCategory].size())
+			{
+				OutCategory = OtherCategory;
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	void UIAINBEditor::DrawGraphWindow()
 	{
 		if(!mGraphOpen)
@@ -871,20 +916,20 @@ namespace application::rendering::ainb
 				{
 					if (Entry.NodeIndex >= 0)
 					{
-						auto Resolved = application::rendering::ainb::UIAINBEditorNodeBase::ResolveLinkedOutputPin(mNodes, Entry.NodeIndex, (uint8_t)j, Entry.ParameterIndex);
-						if (Resolved.Valid)
+						uint8_t ResolvedCategory;
+						if (ResolveOutputCategory(mAINBFile, Entry.NodeIndex, (uint8_t)j, Entry.ParameterIndex, ResolvedCategory))
 						{
-							mNodes[Entry.NodeIndex]->mLinkedOutputParams[Resolved.Category].push_back(Entry.ParameterIndex);
+							mNodes[Entry.NodeIndex]->mLinkedOutputParams[ResolvedCategory].push_back(Entry.ParameterIndex);
 						}
 					}
 					else
 					{
 						for (application::file::game::ainb::AINBFile::MultiEntry& Multi : Entry.Sources)
 						{
-							auto Resolved = application::rendering::ainb::UIAINBEditorNodeBase::ResolveLinkedOutputPin(mNodes, Multi.NodeIndex, (uint8_t)j, Multi.ParameterIndex);
-							if (Resolved.Valid)
+							uint8_t ResolvedCategory;
+							if (ResolveOutputCategory(mAINBFile, Multi.NodeIndex, (uint8_t)j, Multi.ParameterIndex, ResolvedCategory))
 							{
-								mNodes[Multi.NodeIndex]->mLinkedOutputParams[Resolved.Category].push_back(Multi.ParameterIndex);
+								mNodes[Multi.NodeIndex]->mLinkedOutputParams[ResolvedCategory].push_back(Multi.ParameterIndex);
 							}
 						}
 					}
@@ -1902,7 +1947,7 @@ namespace application::rendering::ainb
 
 					ImGui::PushItemWidth(ImGui::GetCurrentTable()->Columns[1].WidthMax);
 					int16_t OldNodeIndex = std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->LeftNodeIndex;
-					if(ImGui::InputScalar(CreateID("##EntryPointLeftNodeIndex").c_str(), ImGuiDataType_S16, &(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->LeftNodeIndex)))
+					if(ImGui::InputScalar(CreateID("##EntryPointLeftNodeIndex").c_str(), ImGuiDataType_S16, &(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->LeftNodeIndex), nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal))
 					{
 						if (mAINBFile.Nodes.size() > OldNodeIndex && OldNodeIndex >= 0)
 						{
@@ -1956,7 +2001,7 @@ namespace application::rendering::ainb
 					ImGui::Text("Right Node Index");
 					ImGui::TableNextColumn();
 					ImGui::PushItemWidth(ImGui::GetCurrentTable()->Columns[1].WidthMax);
-					ImGui::InputScalar(CreateID("##EntryPointRightNodeIndex").c_str(), ImGuiDataType_S16, &(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->RightNodeIndex));
+					ImGui::InputScalar(CreateID("##EntryPointRightNodeIndex").c_str(), ImGuiDataType_S16, &(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->RightNodeIndex), nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal);
 					ImGui::PopItemWidth();
 
 					ImGui::EndTable();
@@ -2070,17 +2115,17 @@ namespace application::rendering::ainb
 					case (int)application::file::game::ainb::AINBFile::GlobalType::UserDefined:
 					case (int)application::file::game::ainb::AINBFile::GlobalType::Int: 
 					{
-						ImGui::InputScalar(CreateID("##BlackBoardValue").c_str(), ImGuiDataType_::ImGuiDataType_U32, reinterpret_cast<uint32_t*>(&Entry->GlobalValue));
+						ImGui::InputScalar(CreateID("##BlackBoardValue").c_str(), ImGuiDataType_::ImGuiDataType_U32, reinterpret_cast<uint32_t*>(&Entry->GlobalValue), nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal);
 						break;
 					}
-					case (int)application::file::game::ainb::AINBFile::GlobalType::Float: 
+					case (int)application::file::game::ainb::AINBFile::GlobalType::Float:
 					{
-						ImGui::InputScalar(CreateID("##BlackBoardValue").c_str(), ImGuiDataType_::ImGuiDataType_Float, reinterpret_cast<float*>(&Entry->GlobalValue));
+						ImGui::InputScalar(CreateID("##BlackBoardValue").c_str(), ImGuiDataType_::ImGuiDataType_Float, reinterpret_cast<float*>(&Entry->GlobalValue), nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsScientific);
 						break;
 					}
-					case (int)application::file::game::ainb::AINBFile::GlobalType::Vec3f: 
+					case (int)application::file::game::ainb::AINBFile::GlobalType::Vec3f:
 					{
-						ImGui::InputFloat3(CreateID("##BlackBoardValue").c_str(), &(reinterpret_cast<glm::vec3*>(&Entry->GlobalValue)->x));
+						ImGui::InputFloat3(CreateID("##BlackBoardValue").c_str(), &(reinterpret_cast<glm::vec3*>(&Entry->GlobalValue)->x), "%.3f", ImGuiInputTextFlags_CharsScientific);
 						break;
 					}
 					default:

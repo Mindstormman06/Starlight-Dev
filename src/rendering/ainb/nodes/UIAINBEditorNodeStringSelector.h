@@ -3,14 +3,14 @@
 #include <rendering/ainb/UIAINBEditorNodeBase.h>
 #include <rendering/popup/PopUpBuilder.h>
 #include <vector>
-#include <utility>
+#include <string>
 
 namespace application::rendering::ainb::nodes
 {
-	class UIAINBEditorNodeF32Selector : public application::rendering::ainb::UIAINBEditorNodeBase
+	class UIAINBEditorNodeStringSelector : public application::rendering::ainb::UIAINBEditorNodeBase
 	{
 	public:
-		UIAINBEditorNodeF32Selector(int UniqueId, application::file::game::ainb::AINBFile::Node& Node);
+		UIAINBEditorNodeStringSelector(int UniqueId, application::file::game::ainb::AINBFile::Node& Node);
 
 		virtual void DrawImpl() override;
 		virtual ImColor GetNodeColor() override;
@@ -24,9 +24,9 @@ namespace application::rendering::ainb::nodes
         static void Initialize();
 
     private:
-        // Real F32Selector branches are Min/Max ranges, not single values - see ConditionMin/
-        // ConditionMax on LinkedNodeInfo and the read/write logic in AINBFile.cpp.
-        std::vector<std::pair<float, float>> mConditions;
+        // A case value can legitimately be an empty string - see the constructor/IsDefaultBranch
+        // for why default-detection can't be based on the string value itself.
+        std::vector<std::string> mConditions;
 
         static application::rendering::popup::PopUpBuilder gAddNewSelection;
 	};

@@ -57,6 +57,8 @@ namespace application::rendering::ainb
 		static bool NodeEditorSaveSettings(const char* data, size_t size, ed::SaveReasonFlags reason, void* userPointer);
 		static void Initialize();
 
+		static inline bool gEnableCullingOptimization = true;
+
 		static const char* gCategoryDropdownItems[3];
 		static const char* gValueTypeDropdownItems[6];
 		static const char* gParamValueTypeDropdownItems[6];

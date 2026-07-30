@@ -1,28 +1,44 @@
-#include "UIAINBEditorNodeS32Selector.h"
+#include "UIAINBEditorNodeStringSelector.h"
 
 #include <util/Logger.h>
 #include <algorithm>
+#include "imgui_stdlib.h"
 
 namespace application::rendering::ainb::nodes
 {
-    application::rendering::popup::PopUpBuilder UIAINBEditorNodeS32Selector::gAddNewSelection;
+    application::rendering::popup::PopUpBuilder UIAINBEditorNodeStringSelector::gAddNewSelection;
 
-    void UIAINBEditorNodeS32Selector::Initialize()
+    // A branch is the Default/fallback iff DynamicStateName was actually read from the file,
+    // which only happens for the last (IsEnd) child - see AINBFile.cpp's Element_StringSelector
+    // read/write logic. Every other branch leaves DynamicStateName at its "MapEditor_AINB_NoVal"
+    // default and uses Condition instead - which can legitimately be "", so it can't be used to
+    // detect the default branch the way S32Selector's literal "Default" sentinel does.
+    static bool IsDefaultBranch(const application::file::game::ainb::AINBFile::LinkedNodeInfo& Info)
     {
-        gAddNewSelection.Title("Add S32 Case").Flag(ImGuiWindowFlags_NoResize).NeedsConfirmation(false).AddDataStorage(sizeof(int32_t)).ContentDrawingFunction([](popup::PopUpBuilder& Builder)
+        return Info.DynamicStateName != "MapEditor_AINB_NoVal";
+    }
+
+    static std::string BuildCaseLabel(const std::string& Value)
+    {
+        return "= \"" + Value + "\"";
+    }
+
+    void UIAINBEditorNodeStringSelector::Initialize()
+    {
+        gAddNewSelection.Title("Add String Case").Flag(ImGuiWindowFlags_NoResize).NeedsConfirmation(false).AddDataStorageInstanced<std::string>([](void* Ptr) { *reinterpret_cast<std::string*>(Ptr) = ""; }).ContentDrawingFunction([](popup::PopUpBuilder& Builder)
         {
-            if (ImGui::BeginTable("S32Table", 2, ImGuiTableFlags_BordersInnerV))
+            if (ImGui::BeginTable("StringTable", 2, ImGuiTableFlags_BordersInnerV))
 			{
-				ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("S32 Case Value").x);
+				ImGui::TableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("String Case Value").x);
 
 				ImGui::TableNextRow();
 
 				ImGui::TableSetColumnIndex(0);
-				ImGui::Text("S32 Case Value");
+				ImGui::Text("String Case Value");
 				ImGui::TableNextColumn();
 
 				ImGui::PushItemWidth(ImGui::GetCurrentTable()->Columns[1].WidthMax);
-                ImGui::InputScalar("##S32CaseValue", ImGuiDataType_S32, Builder.GetDataStorage(0).mPtr, nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal);
+                ImGui::InputText("##StringCaseValue", reinterpret_cast<std::string*>(Builder.GetDataStorage(0).mPtr));
                 ImGui::PopItemWidth();
 
                 ImGui::EndTable();
@@ -30,18 +46,18 @@ namespace application::rendering::ainb::nodes
         }).Register();
     }
 
-    UIAINBEditorNodeS32Selector::UIAINBEditorNodeS32Selector(int UniqueId, application::file::game::ainb::AINBFile::Node& Node) : UIAINBEditorNodeBase(UniqueId, Node)
+    UIAINBEditorNodeStringSelector::UIAINBEditorNodeStringSelector(int UniqueId, application::file::game::ainb::AINBFile::Node& Node) : UIAINBEditorNodeBase(UniqueId, Node)
     {
-        for (application::file::game::ainb::AINBFile::LinkedNodeInfo& Info : mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink]) 
+        for (application::file::game::ainb::AINBFile::LinkedNodeInfo& Info : mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink])
         {
-            if(Info.Condition != "" && Info.Condition != "Default")
+            if(!IsDefaultBranch(Info))
             {
-                mConditions.push_back(std::stoi(Info.Condition));
+                mConditions.push_back(Info.Condition);
             }
         }
     }
 
-    void UIAINBEditorNodeS32Selector::DrawImpl()
+    void UIAINBEditorNodeStringSelector::DrawImpl()
     {
         ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(8, 8, 8, 8));
         ed::BeginNode(mUniqueId++);
@@ -64,7 +80,7 @@ namespace application::rendering::ainb::nodes
             {
                 gAddNewSelection.Open([this](popup::PopUpBuilder& Builder)
                 {
-                    int32_t Value = *reinterpret_cast<int32_t*>(Builder.GetDataStorage(0).mPtr);
+                    std::string Value = *reinterpret_cast<std::string*>(Builder.GetDataStorage(0).mPtr);
 
                     if(std::find(mConditions.begin(), mConditions.end(), Value) != mConditions.end())
                         return;
@@ -78,9 +94,9 @@ namespace application::rendering::ainb::nodes
         }
 
         bool HasDefaultLink = false;
-        for (application::file::game::ainb::AINBFile::LinkedNodeInfo& Info : mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink]) 
+        for (application::file::game::ainb::AINBFile::LinkedNodeInfo& Info : mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink])
         {
-            if(Info.Condition == "Default")
+            if(IsDefaultBranch(Info))
             {
                 HasDefaultLink = true;
                 break;
@@ -92,33 +108,33 @@ namespace application::rendering::ainb::nodes
         for(auto Iter = mConditions.begin(); Iter != mConditions.end(); )
         {
             bool Linked = false;
-            std::string Str = std::to_string(*Iter);
-            for (application::file::game::ainb::AINBFile::LinkedNodeInfo& Info : mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink]) 
+            for (application::file::game::ainb::AINBFile::LinkedNodeInfo& Info : mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink])
             {
-                if(Info.Condition == Str)
+                if(!IsDefaultBranch(Info) && Info.Condition == *Iter)
                 {
                     Linked = true;
                     break;
                 }
             }
-            // "= N" doubles as the lookup key RenderLinks uses below, so it must always be
+            // The label doubles as the lookup key RenderLinks uses below, so it must always be
             // built the same way even while culled - only the "-" remove button and its
             // positioning math are cosmetic/interactive and safe to skip off-screen.
-            std::string VisualStr = "= " + Str;
+            std::string VisualStr = BuildCaseLabel(*Iter);
 
             if (!mIsCulled)
             {
                 float PosX = ImGui::GetCursorPosX();
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - 8 - (18 + ImGui::CalcTextSize(VisualStr.c_str()).x + ImGui::GetStyle().ItemSpacing.x + 16) - ImGui::GetStyle().ItemSpacing.x - ImGui::CalcTextSize("-").x - ImGui::GetStyle().ItemInnerSpacing.x * 2.0f);
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.47f, 0.07f, 0.07f, 1.0f));
-                bool WantRemove = ImGui::Button(("-##" + Str + "_" + std::to_string(mNode->NodeIndex)).c_str());
+                bool WantRemove = ImGui::Button(("-##" + VisualStr + "_" + std::to_string(mNode->NodeIndex)).c_str());
                 ImGui::PopStyleColor();
                 if(WantRemove)
                 {
+                    std::string RemValue = *Iter;
                     mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].erase(
-                        std::remove_if(mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].begin(), mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].end(), [Str](const application::file::game::ainb::AINBFile::LinkedNodeInfo& Info)
+                        std::remove_if(mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].begin(), mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].end(), [RemValue](const application::file::game::ainb::AINBFile::LinkedNodeInfo& Info)
                             {
-                                return Info.Condition == Str;
+                                return !IsDefaultBranch(Info) && Info.Condition == RemValue;
                             }),
                         mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].end());
 
@@ -133,24 +149,6 @@ namespace application::rendering::ainb::nodes
             Iter++;
         }
 
-        /*
-        for (uint8_t Type = 0; Type < application::file::game::ainb::AINBFile::ValueTypeCount; Type++)
-        {
-            for (uint8_t Index = 0; Index < mNode->InputParameters[Type].size(); Index++)
-            {
-                DrawInputParameter(mNode, Type, Index);
-            }
-        }
-
-        for (uint8_t Type = 0; Type < application::file::game::ainb::AINBFile::ValueTypeCount; Type++)
-        {
-            for (uint8_t Index = 0; Index < mNode->OutputParameters[Type].size(); Index++)
-            {
-                DrawOutputParameter(mNode, Type, Index);
-            }
-        }
-        */
-        
         DrawInternalParameterSeparator();
 
         for (uint8_t Type = 0; Type < application::file::game::ainb::AINBFile::ValueTypeCount; Type++)
@@ -165,25 +163,25 @@ namespace application::rendering::ainb::nodes
         ed::PopStyleVar();
     }
 
-    void UIAINBEditorNodeS32Selector::RenderLinks(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes)
+    void UIAINBEditorNodeStringSelector::RenderLinks(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes)
     {
         uint32_t CurrentLinkId = mNodeId + 500; //Link start at +500
-        for (int i = 0; i < mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size(); i++) 
+        for (int i = 0; i < mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size(); i++)
         {
-            if (mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink][i].NodeIndex == -1 || mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink][i].NodeIndex >= Nodes.size())
+            application::file::game::ainb::AINBFile::LinkedNodeInfo& Info = mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink][i];
+
+            if (Info.NodeIndex == -1 || Info.NodeIndex >= Nodes.size())
                 continue;
 
             int32_t StartPinId = -1;
 
-            application::file::game::ainb::AINBFile::LinkedNodeInfo& Info = mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink][i];
-
-            if(Info.Condition == "Default")
+            if(IsDefaultBranch(Info))
             {
                 StartPinId = mOutputFlowParameters["Default"];
             }
             else
             {
-                StartPinId = mOutputFlowParameters["= " + Info.Condition];
+                StartPinId = mOutputFlowParameters[BuildCaseLabel(Info.Condition)];
             }
 
             ed::Link(CurrentLinkId++, StartPinId, Nodes[Info.NodeIndex]->mNodeId + 1, GetValueTypeColor(6));
@@ -194,47 +192,56 @@ namespace application::rendering::ainb::nodes
         RenderParameterLinks(Nodes, CurrentLinkId);
     }
 
-    bool UIAINBEditorNodeS32Selector::HasInternalParameters()
+    bool UIAINBEditorNodeStringSelector::HasInternalParameters()
     {
         return true;
     }
 
-    ImColor UIAINBEditorNodeS32Selector::GetNodeColor()
+    ImColor UIAINBEditorNodeStringSelector::GetNodeColor()
     {
         return ImColor(255, 128, 128);
     }
 
-    int UIAINBEditorNodeS32Selector::GetNodeIndex()
+    int UIAINBEditorNodeStringSelector::GetNodeIndex()
     {
         return mNode->NodeIndex;
     }
 
-    //Ensure that first node link is True
-    bool UIAINBEditorNodeS32Selector::FinalizeNode()
+    //Ensure that the Default link ends up last
+    bool UIAINBEditorNodeStringSelector::FinalizeNode()
     {
         if(mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size() < 2)
         {
-            application::util::Logger::Error("UIAINBEditorNodeS32Selector", "The S32 Selector with index %u is missing at least one output flow link", mNode->NodeIndex);
+            application::util::Logger::Error("UIAINBEditorNodeStringSelector", "The String Selector with index %u is missing at least one output flow link", mNode->NodeIndex);
             return false;
         }
 
         std::sort(mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].begin(), mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].end(), [](application::file::game::ainb::AINBFile::LinkedNodeInfo& A, application::file::game::ainb::AINBFile::LinkedNodeInfo& B)
         {
-            if(A.Condition == "Default") return false;  // a should go after b
-            if(B.Condition == "Default") return true;   // b should go after a
+            bool ADefault = IsDefaultBranch(A);
+            bool BDefault = IsDefaultBranch(B);
+            if(ADefault) return false;  // a should go after b
+            if(BDefault) return true;   // b should go after a
 
-            return std::stoi(A.Condition) < std::stoi(B.Condition);
+            return A.Condition < B.Condition;
         });
 
         return true;
     }
 
-    void UIAINBEditorNodeS32Selector::PostProcessLinkedNodeInfo(Pin& StartPin, application::file::game::ainb::AINBFile::LinkedNodeInfo& Info)
+    void UIAINBEditorNodeStringSelector::PostProcessLinkedNodeInfo(Pin& StartPin, application::file::game::ainb::AINBFile::LinkedNodeInfo& Info)
     {
-        Info.Condition = StartPin.mParameterIndex == 0 ? "Default" : std::to_string(mConditions[StartPin.mParameterIndex - 1]);
+        if (StartPin.mParameterIndex == 0)
+        {
+            Info.DynamicStateName = "";
+        }
+        else
+        {
+            Info.Condition = mConditions[StartPin.mParameterIndex - 1];
+        }
     }
 
-    bool UIAINBEditorNodeS32Selector::HasFlowOutputParameters()
+    bool UIAINBEditorNodeStringSelector::HasFlowOutputParameters()
     {
         return true;
     }

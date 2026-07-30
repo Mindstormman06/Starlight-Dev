@@ -5,6 +5,8 @@
 #include <util/FileUtil.h>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
+#include <set>
 #include <util/BinaryVectorReader.h>
 #include <util/BinaryVectorWriter.h>
 #include <manager/ProjectMgr.h>
@@ -88,6 +90,20 @@ namespace application::manager
         LoadFromFile();
 #endif
 
+        // The core flow-control node types below are hardcoded here rather than sourced from
+        // the .eainbdef, since their shape is fixed by the AINB format itself, not per-actor
+        // data. Drop any same-named entries the file already loaded so we don't end up with
+        // duplicate, possibly-mistyped definitions (e.g. Element_Simultaneous's EndPolicy/
+        // ResultPolicy were String in the file, causing an ImGui ID collision in Add Node too).
+        static const std::set<std::string> HardcodedNodeNames = {
+            "Element_Simultaneous", "Element_BoolSelector", "Element_S32Selector",
+            "Element_F32Selector", "Element_StringSelector",
+            "Element_Sequential", "Element_SplitTiming"
+        };
+        gNodeDefinitions.erase(std::remove_if(gNodeDefinitions.begin(), gNodeDefinitions.end(),
+            [](const AINBNodeMgr::NodeDef& Def) { return HardcodedNodeNames.contains(Def.mName); }),
+            gNodeDefinitions.end());
+
         {
             AINBNodeMgr::NodeDef Def;
             Def.mName = "Element_Simultaneous";
@@ -162,6 +178,86 @@ namespace application::manager
                 .mName = "InputValue",
                 .mClass = "",
                 .mValueType = application::file::game::ainb::AINBFile::ValueType::Int
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "ChildFrameSync",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Bool
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "IsNoSelectIfSameInstance",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Bool
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "IsNoSelectWhenChildBusy",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Bool
+            });
+            Def.mFlowOutputParameters.push_back("Default");
+            Def.mCategories.push_back(AINBNodeMgr::NodeDef::Category::AI);
+            Def.mCategories.push_back(AINBNodeMgr::NodeDef::Category::SEQUENCE);
+            gNodeDefinitions.push_back(Def);
+        }
+
+        {
+            AINBNodeMgr::NodeDef Def;
+            Def.mName = "Element_F32Selector";
+            Def.mNodeType = application::file::game::ainb::AINBFile::NodeTypes::Element_F32Selector;
+            Def.mInputParameters.push_back(NodeDef::ParameterDef{
+                .mName = "Input",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Float
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "CalculateTiming",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Int
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "InputValue",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Float
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "ChildFrameSync",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Bool
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "IsNoSelectIfSameInstance",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Bool
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "IsNoSelectWhenChildBusy",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Bool
+            });
+            Def.mFlowOutputParameters.push_back("Default");
+            Def.mCategories.push_back(AINBNodeMgr::NodeDef::Category::AI);
+            Def.mCategories.push_back(AINBNodeMgr::NodeDef::Category::SEQUENCE);
+            gNodeDefinitions.push_back(Def);
+        }
+
+        {
+            AINBNodeMgr::NodeDef Def;
+            Def.mName = "Element_StringSelector";
+            Def.mNodeType = application::file::game::ainb::AINBFile::NodeTypes::Element_StringSelector;
+            Def.mInputParameters.push_back(NodeDef::ParameterDef{
+                .mName = "Input",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::String
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "CalculateTiming",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::Int
+            });
+            Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
+                .mName = "InputValue",
+                .mClass = "",
+                .mValueType = application::file::game::ainb::AINBFile::ValueType::String
             });
             Def.mImmediateParameters.push_back(NodeDef::ParameterDef{
                 .mName = "ChildFrameSync",

@@ -149,20 +149,27 @@ namespace application::rendering::ainb
 
 		ImVec2 NodePos = ed::GetNodePosition(mNodeId);
 
-		ImVec2 ScreenMin = ed::CanvasToScreen(NodePos);
-		ImVec2 ScreenMax = ed::CanvasToScreen(ImVec2(NodePos.x + NodeSize.x, NodePos.y + NodeSize.y));
-		ImVec2 ViewSize = ed::GetScreenSize();
+		// GetScreenSize() only returns the canvas's width/height, not its on-screen origin, so
+		// comparing it against CanvasToScreen()'s absolute screen coordinates only worked when
+		// the Graph panel happened to sit at the window's top-left corner - anywhere else (e.g.
+		// docked to the right), nodes toward the right edge get culled early. Working entirely
+		// in canvas space (converting the actual visible viewport into it) avoids the mismatch.
+		ImVec2 WindowPos = ImGui::GetWindowPos();
+		ImVec2 WindowSize = ImGui::GetWindowSize();
+		ImVec2 ViewportMin = ed::ScreenToCanvas(WindowPos);
+		ImVec2 ViewportMax = ed::ScreenToCanvas(ImVec2(WindowPos.x + WindowSize.x, WindowPos.y + WindowSize.y));
 
 		// Bounds are one frame stale (they predate this frame's layout), so pad the viewport
-		// test a bit to avoid pop-in right at the edges.
-		const float Margin = 64.0f;
-		return ScreenMax.x < -Margin || ScreenMin.x > ViewSize.x + Margin ||
-		       ScreenMax.y < -Margin || ScreenMin.y > ViewSize.y + Margin;
+		// test a bit to avoid pop-in right at the edges. Margin is meant as screen pixels, so
+		// convert it to canvas units by the current zoom.
+		const float Margin = 64.0f / ed::GetCurrentZoom();
+		return NodePos.x + NodeSize.x < ViewportMin.x - Margin || NodePos.x > ViewportMax.x + Margin ||
+		       NodePos.y + NodeSize.y < ViewportMin.y - Margin || NodePos.y > ViewportMax.y + Margin;
 	}
 
 	void UIAINBEditorNodeBase::Draw()
 	{
-		mIsCulled = ComputeCulled();
+		mIsCulled = application::rendering::ainb::UIAINBEditor::gEnableCullingOptimization ? ComputeCulled() : false;
 
 		DrawImpl();
 
@@ -374,12 +381,12 @@ namespace application::rendering::ainb
         switch (Type) {
         case application::file::game::ainb::AINBFile::ValueType::Int:
             ImGui::PushItemWidth(ImGui::CalcTextSize(std::to_string(*reinterpret_cast<int*>(Dest)).c_str()).x + ImGui::GetStyle().ItemInnerSpacing.x * 2);
-            ImGui::InputScalar(("##" + Name + std::to_string(Id)).c_str(), ImGuiDataType_S32, Dest);
+            ImGui::InputScalar(("##" + Name + std::to_string(Id)).c_str(), ImGuiDataType_S32, Dest, nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal);
             ImGui::PopItemWidth();
             break;
         case application::file::game::ainb::AINBFile::ValueType::Float:
             ImGui::PushItemWidth(ImGui::CalcTextSize(std::to_string(*reinterpret_cast<float*>(Dest)).c_str()).x + ImGui::GetStyle().ItemInnerSpacing.x * 2);
-            ImGui::InputScalar(("##" + Name + std::to_string(Id)).c_str(), ImGuiDataType_Float, Dest);
+            ImGui::InputScalar(("##" + Name + std::to_string(Id)).c_str(), ImGuiDataType_Float, Dest, nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsScientific);
             ImGui::PopItemWidth();
             break;
         case application::file::game::ainb::AINBFile::ValueType::Bool:
@@ -391,7 +398,7 @@ namespace application::rendering::ainb
             ImGui::PopItemWidth();
             break;
         case application::file::game::ainb::AINBFile::ValueType::Vec3f:
-            ImGuiExt::InputScalarNWidth(("##" + Name + std::to_string(Id)).c_str(), ImGuiDataType_Float, &((glm::vec3*)Dest)->x, 3, ImGui::CalcTextSize(std::to_string(((glm::vec3*)Dest)->x).c_str()).x + ImGui::CalcTextSize(std::to_string(((glm::vec3*)Dest)->y).c_str()).x + ImGui::CalcTextSize(std::to_string(((glm::vec3*)Dest)->z).c_str()).x);
+            ImGuiExt::InputScalarNWidth(("##" + Name + std::to_string(Id)).c_str(), ImGuiDataType_Float, &((glm::vec3*)Dest)->x, 3, ImGui::CalcTextSize(std::to_string(((glm::vec3*)Dest)->x).c_str()).x + ImGui::CalcTextSize(std::to_string(((glm::vec3*)Dest)->y).c_str()).x + ImGui::CalcTextSize(std::to_string(((glm::vec3*)Dest)->z).c_str()).x, nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsScientific);
             break;
         case application::file::game::ainb::AINBFile::ValueType::UserDefined:
             ImGui::NewLine();
@@ -484,6 +491,31 @@ namespace application::rendering::ainb
     {
         // Input param (-> Name [Value])
         application::file::game::ainb::AINBFile::InputEntry& Param = mNode->InputParameters[Type][Index];
+
+        // Param.Value must always hold the variant alternative matching its bucket (Type) -
+        // both the editable widget below and the linked-width calculation reinterpret_cast it.
+        if (Type != Param.Value.index())
+        {
+            switch (Type)
+            {
+            case (int)application::file::game::ainb::AINBFile::ValueType::Int:
+                Param.Value = (uint32_t)0;
+                break;
+            case (int)application::file::game::ainb::AINBFile::ValueType::Float:
+                Param.Value = 0.0f;
+                break;
+            case (int)application::file::game::ainb::AINBFile::ValueType::Bool:
+                Param.Value = false;
+                break;
+            case (int)application::file::game::ainb::AINBFile::ValueType::String:
+                Param.Value = "";
+                break;
+            case (int)application::file::game::ainb::AINBFile::ValueType::Vec3f:
+                Param.Value = glm::vec3(0, 0, 0);
+                break;
+            }
+        }
+
         float Alpha = ImGui::GetStyle().Alpha;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, Alpha);
         // Off-screen: skip the "(Type)" suffix concatenation - the pin still needs to be

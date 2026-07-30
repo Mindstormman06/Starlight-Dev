@@ -1122,6 +1122,14 @@ namespace application::manager
                                 ImGui::EndTabItem();
                             }
 
+                            if (ImGui::BeginTabItem("AINB"))
+                            {
+                                ImGui::NewLine();
+                                ImGui::Checkbox("Enable culling optimzation for low end devices", &application::rendering::ainb::UIAINBEditor::gEnableCullingOptimization);
+
+                                ImGui::EndTabItem();
+                            }
+
                             ImGui::EndTabBar();
                         }
 
