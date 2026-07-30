@@ -16,32 +16,38 @@ namespace application::rendering::ainb::nodes
 
         DrawNodeHeader(mNode->GetName(), mNode);
 
-        ImVec2 CursorPos = ImGui::GetCursorPos();
-
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f));
-        if(ImGui::Button(("+##" + std::to_string(mNode->NodeIndex)).c_str()))
+        if (!mIsCulled)
         {
-            mSeqCount++;
-        }
-        ImGui::PopStyleColor();
-        ImGui::SameLine();
-        if(mSeqCount <= 2)
-            ImGui::BeginDisabled();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.47f, 0.07f, 0.07f, 1.0f));
-        if(ImGui::Button(("-##" + std::to_string(mNode->NodeIndex)).c_str()))
-        {
-            mSeqCount--;
-            if (mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size() >= mSeqCount)
-                mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].resize(mSeqCount);
-        }
-        else if(mSeqCount <= 2)
-        {
-            ImGui::EndDisabled();
-        }
-        ImGui::PopStyleColor();
+            ImVec2 CursorPos = ImGui::GetCursorPos();
 
-        ImGui::SetCursorPos(CursorPos);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f));
+            if(ImGui::Button(("+##" + std::to_string(mNode->NodeIndex)).c_str()))
+            {
+                mSeqCount++;
+            }
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            if(mSeqCount <= 2)
+                ImGui::BeginDisabled();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.47f, 0.07f, 0.07f, 1.0f));
+            if(ImGui::Button(("-##" + std::to_string(mNode->NodeIndex)).c_str()))
+            {
+                mSeqCount--;
+                if (mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size() >= mSeqCount)
+                    mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].resize(mSeqCount);
+            }
+            else if(mSeqCount <= 2)
+            {
+                ImGui::EndDisabled();
+            }
+            ImGui::PopStyleColor();
 
+            ImGui::SetCursorPos(CursorPos);
+        }
+
+        // "Seq N" doubles as the lookup key RenderLinks uses (see below), so it must always be
+        // built exactly the same way even while culled - only the +/- buttons above are purely
+        // cosmetic and safe to skip.
         for(uint16_t i = 0; i < mSeqCount; i++)
         {
             DrawOutputFlowParameter("Seq " + std::to_string(i), mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size() > i, mSeqCount);

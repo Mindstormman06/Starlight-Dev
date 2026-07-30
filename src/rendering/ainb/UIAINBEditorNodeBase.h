@@ -110,6 +110,11 @@ namespace application::rendering::ainb
 		// an entry at ParameterIndex at all.
 		static ResolvedOutputPin ResolveLinkedOutputPin(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes, int NodeIndex, uint8_t Category, int ParameterIndex);
 
+		// Returns true if this node's last-known bounds (from the previous frame) fall entirely
+		// outside the currently visible viewport. Nodes that have never been laid out yet (size
+		// still zero) are always reported as not culled so their first layout pass can run.
+		bool ComputeCulled();
+
 		// Shared implementation of the per-value-type Input/Multi parameter link rendering
 		// used by every node type that has value parameters (Default, BoolSelector,
 		// S32Selector, F32Selector). CurrentLinkId is threaded through by reference since
@@ -121,6 +126,12 @@ namespace application::rendering::ainb
 		bool mEnableFlow = false;
 		bool mFlowLinked = false;
 		bool mIsEntryPoint = false;
+		// Set at the start of every Draw() call, based on the node's last-known bounds vs. the
+		// current viewport. Node subtypes with their own inline widgets (e.g. the +/- case buttons
+		// on the selector/sequential nodes) should skip that extra work while this is true - the
+		// node is off-screen, but its pins must still be submitted every frame (see DrawInputParameter/
+		// DrawOutputParameter/DrawOutputFlowParameter) so links to/from it keep rendering.
+		bool mIsCulled = false;
 		NodeShapeInfo mNodeShapeInfo;
 		std::vector<std::vector<uint32_t>> mOutputParameters; //6 value types -> vector of output pin ids
 		std::unordered_map<std::string, uint32_t> mOutputFlowParameters; //name -> pin id

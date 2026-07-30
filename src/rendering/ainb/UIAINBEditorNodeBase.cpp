@@ -141,11 +141,32 @@ namespace application::rendering::ainb
         mIsEntryPoint = false;
     }
 
+	bool UIAINBEditorNodeBase::ComputeCulled()
+	{
+		ImVec2 NodeSize = ed::GetNodeSize(mNodeId);
+		if (NodeSize.x <= 0.0f || NodeSize.y <= 0.0f)
+			return false; // never laid out yet - draw fully so its bounds get established
+
+		ImVec2 NodePos = ed::GetNodePosition(mNodeId);
+
+		ImVec2 ScreenMin = ed::CanvasToScreen(NodePos);
+		ImVec2 ScreenMax = ed::CanvasToScreen(ImVec2(NodePos.x + NodeSize.x, NodePos.y + NodeSize.y));
+		ImVec2 ViewSize = ed::GetScreenSize();
+
+		// Bounds are one frame stale (they predate this frame's layout), so pad the viewport
+		// test a bit to avoid pop-in right at the edges.
+		const float Margin = 64.0f;
+		return ScreenMax.x < -Margin || ScreenMin.x > ViewSize.x + Margin ||
+		       ScreenMax.y < -Margin || ScreenMin.y > ViewSize.y + Margin;
+	}
+
 	void UIAINBEditorNodeBase::Draw()
 	{
+		mIsCulled = ComputeCulled();
+
 		DrawImpl();
 
-        if (ImGui::IsItemVisible())
+        if (!mIsCulled && ImGui::IsItemVisible())
 		{
             int Alpha = ImGui::GetStyle().Alpha;
             ImColor HeaderColor = GetNodeColor();
@@ -447,11 +468,21 @@ namespace application::rendering::ainb
         application::file::game::ainb::AINBFile::InputEntry& Param = mNode->InputParameters[Type][Index];
         float Alpha = ImGui::GetStyle().Alpha;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, Alpha);
-        DrawPin(mUniqueId++, Param.NodeIndex >= 0 || !Param.Sources.empty(), Alpha * 255, ValueTypeToPinType(Type), ed::PinKind::Input, Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")");
+        // Off-screen: skip the "(Type)" suffix concatenation - the pin still needs to be
+        // submitted every frame (for links), but nobody can read the label right now.
+        DrawPin(mUniqueId++, Param.NodeIndex >= 0 || !Param.Sources.empty(), Alpha * 255, ValueTypeToPinType(Type), ed::PinKind::Input,
+            mIsCulled ? Param.Name : Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")");
         ImGui::PopStyleVar();
         mInputParameters[Type].push_back(mUniqueId - 1);
         mPins.insert({ mUniqueId - 1, Pin {.mKind = ed::PinKind::Input, .mType = ValueTypeToPinType(Type), .mNode = mNode, .mObjectPtr = &Param, .mParameterIndex = Index } });
         ImGui::SameLine();
+
+        if (mIsCulled)
+        {
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
+            return;
+        }
+
         if (Param.NodeIndex == -1 && Param.Sources.empty()) // Input param is not linked to any output param, so the value has to be set directly
         {
             DrawParameterValue(static_cast<application::file::game::ainb::AINBFile::ValueType>(Type), Param.Name, mUniqueId, (void*)&Param.Value);
@@ -493,8 +524,6 @@ namespace application::rendering::ainb
     {
         // Internal param (Name [Value])
         application::file::game::ainb::AINBFile::ImmediateParameter& Immediate = mNode->ImmediateParameters[Type][Index];
-        ImGui::TextUnformatted(Immediate.Name.c_str());
-        ImGui::SameLine();
 
         bool ValueTypeMismatch = Immediate.ValueType != Immediate.Value.index();
         if (ValueTypeMismatch)
@@ -519,6 +548,19 @@ namespace application::rendering::ainb
             }
         }
 
+        // Internal parameters have no pins/links, so off-screen we can skip the name/value
+        // widgets entirely - just reserve a row of roughly the right height so the node's
+        // cached bounds (used by ComputeCulled next frame) don't collapse.
+        if (mIsCulled)
+        {
+            ImGui::Dummy(ImVec2(0.0f, ImGui::GetFrameHeightWithSpacing()));
+            mUniqueId++;
+            return;
+        }
+
+        ImGui::TextUnformatted(Immediate.Name.c_str());
+        ImGui::SameLine();
+
         DrawParameterValue(static_cast<application::file::game::ainb::AINBFile::ValueType>(Type), Immediate.Name, mUniqueId++, (void*)&Immediate.Value);
     }
 
@@ -535,13 +577,20 @@ namespace application::rendering::ainb
     {
         //Output param (ParamName (Type/Class) ->)
         application::file::game::ainb::AINBFile::OutputEntry& Param = mNode->OutputParameters[Type][Index];
-        float Offset = (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - ed::GetStyle().NodePadding.x - ed::GetStyle().NodeBorderWidth - 24.0f * ImGui::GetPlatformIO().Monitors[0].DpiScale - ImGui::GetStyle().ItemSpacing.x * 2.0f - ImGui::CalcTextSize((Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")").c_str()).x;
-        //float Offset = (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - ed::GetStyle().NodePadding.x - 24.0f * ImGui::GetPlatformIO().Monitors[0].DpiScale - ImGui::GetStyle().ItemSpacing.x * 2.0f - ImGui::GetStyle().ItemInnerSpacing.x - ImGui::CalcTextSize((Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")").c_str()).x;
-        if(Offset > 0)
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Offset);
+
+        // Off-screen: skip the right-alignment text measurement (and the "(Type)" suffix it's
+        // measuring) entirely - the pin still needs to be submitted every frame so links keep
+        // resolving, but exactly where it lands within the node doesn't matter while hidden.
+        if (!mIsCulled)
+        {
+            float Offset = (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - ed::GetStyle().NodePadding.x - ed::GetStyle().NodeBorderWidth - 24.0f * ImGui::GetPlatformIO().Monitors[0].DpiScale - ImGui::GetStyle().ItemSpacing.x * 2.0f - ImGui::CalcTextSize((Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")").c_str()).x;
+            if(Offset > 0)
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Offset);
+        }
         float Alpha = ImGui::GetStyle().Alpha;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, Alpha);
-        DrawPin(mUniqueId++, std::find(mLinkedOutputParams[Type].begin(), mLinkedOutputParams[Type].end(), Index) != mLinkedOutputParams[Type].end(), Alpha * 255, ValueTypeToPinType(Type), ed::PinKind::Output, Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")");
+        DrawPin(mUniqueId++, std::find(mLinkedOutputParams[Type].begin(), mLinkedOutputParams[Type].end(), Index) != mLinkedOutputParams[Type].end(), Alpha * 255, ValueTypeToPinType(Type), ed::PinKind::Output,
+            mIsCulled ? Param.Name : Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")");
         ImGui::PopStyleVar();
         mOutputParameters[Type].push_back(mUniqueId - 1);
         mPins.insert({ mUniqueId - 1, Pin {.mKind = ed::PinKind::Output, .mType = ValueTypeToPinType(Type), .mNode = mNode, .mObjectPtr = &Param, .mParameterIndex = Index } });
@@ -549,9 +598,11 @@ namespace application::rendering::ainb
 
     void UIAINBEditorNodeBase::DrawOutputFlowParameter(const std::string& Text, bool Linked, uint8_t Index, bool AllowMultipleLinks)
     {
-        float Offset = (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - ed::GetStyle().NodePadding.x - ed::GetStyle().NodeBorderWidth - 24.0f * ImGui::GetPlatformIO().Monitors[0].DpiScale - ImGui::GetStyle().ItemSpacing.x * 2.0f - ImGui::CalcTextSize(Text.c_str()).x;
-        //(mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - 8 - (18 + ImGui::CalcTextSize(Text.c_str()).x + ImGui::GetStyle().ItemSpacing.x + 16)
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Offset);
+        if (!mIsCulled)
+        {
+            float Offset = (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - ed::GetStyle().NodePadding.x - ed::GetStyle().NodeBorderWidth - 24.0f * ImGui::GetPlatformIO().Monitors[0].DpiScale - ImGui::GetStyle().ItemSpacing.x * 2.0f - ImGui::CalcTextSize(Text.c_str()).x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Offset);
+        }
         float Alpha = ImGui::GetStyle().Alpha;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, Alpha);
         DrawPin(mUniqueId++, Linked, Alpha * 255, PinType::Flow, ed::PinKind::Output, Text);

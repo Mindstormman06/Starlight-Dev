@@ -56,23 +56,26 @@ namespace application::rendering::ainb::nodes
 			}
 		}
 
-        float BasePosX = ImGui::GetCursorPosX();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f));
-        if(ImGui::Button(("+##" + std::to_string(mNode->NodeIndex)).c_str()))
+        if (!mIsCulled)
         {
-            gAddNewSelection.Open([this](popup::PopUpBuilder& Builder)
+            float BasePosX = ImGui::GetCursorPosX();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f));
+            if(ImGui::Button(("+##" + std::to_string(mNode->NodeIndex)).c_str()))
             {
-                int32_t Value = *reinterpret_cast<int32_t*>(Builder.GetDataStorage(0).mPtr);
+                gAddNewSelection.Open([this](popup::PopUpBuilder& Builder)
+                {
+                    int32_t Value = *reinterpret_cast<int32_t*>(Builder.GetDataStorage(0).mPtr);
 
-                if(std::find(mConditions.begin(), mConditions.end(), Value) != mConditions.end())
-                    return;
+                    if(std::find(mConditions.begin(), mConditions.end(), Value) != mConditions.end())
+                        return;
 
-                mConditions.push_back(Value);
-            });
+                    mConditions.push_back(Value);
+                });
+            }
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(BasePosX);
         }
-        ImGui::PopStyleColor();
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(BasePosX);
 
         bool HasDefaultLink = false;
         for (application::file::game::ainb::AINBFile::LinkedNodeInfo& Info : mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink]) 
@@ -98,26 +101,33 @@ namespace application::rendering::ainb::nodes
                     break;
                 }
             }
+            // "= N" doubles as the lookup key RenderLinks uses below, so it must always be
+            // built the same way even while culled - only the "-" remove button and its
+            // positioning math are cosmetic/interactive and safe to skip off-screen.
             std::string VisualStr = "= " + Str;
-            float PosX = ImGui::GetCursorPosX();
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - 8 - (18 + ImGui::CalcTextSize(VisualStr.c_str()).x + ImGui::GetStyle().ItemSpacing.x + 16) - ImGui::GetStyle().ItemSpacing.x - ImGui::CalcTextSize("-").x - ImGui::GetStyle().ItemInnerSpacing.x * 2.0f);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.47f, 0.07f, 0.07f, 1.0f));
-            bool WantRemove = ImGui::Button(("-##" + Str + "_" + std::to_string(mNode->NodeIndex)).c_str());
-            ImGui::PopStyleColor();
-            if(WantRemove)
+
+            if (!mIsCulled)
             {
-                mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].erase(
-                    std::remove_if(mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].begin(), mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].end(), [Str](const application::file::game::ainb::AINBFile::LinkedNodeInfo& Info)
-                        {
-                            return Info.Condition == Str;
-                        }),
-                    mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].end());
-                
-                Iter = mConditions.erase(Iter);
-                continue;
+                float PosX = ImGui::GetCursorPosX();
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - 8 - (18 + ImGui::CalcTextSize(VisualStr.c_str()).x + ImGui::GetStyle().ItemSpacing.x + 16) - ImGui::GetStyle().ItemSpacing.x - ImGui::CalcTextSize("-").x - ImGui::GetStyle().ItemInnerSpacing.x * 2.0f);
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.47f, 0.07f, 0.07f, 1.0f));
+                bool WantRemove = ImGui::Button(("-##" + Str + "_" + std::to_string(mNode->NodeIndex)).c_str());
+                ImGui::PopStyleColor();
+                if(WantRemove)
+                {
+                    mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].erase(
+                        std::remove_if(mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].begin(), mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].end(), [Str](const application::file::game::ainb::AINBFile::LinkedNodeInfo& Info)
+                            {
+                                return Info.Condition == Str;
+                            }),
+                        mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].end());
+
+                    Iter = mConditions.erase(Iter);
+                    continue;
+                }
+                ImGui::SameLine();
+                ImGui::SetCursorPosX(PosX);
             }
-            ImGui::SameLine();
-            ImGui::SetCursorPosX(PosX);
             DrawOutputFlowParameter(VisualStr, Linked, 1 + Index);
             Index++;
             Iter++;
