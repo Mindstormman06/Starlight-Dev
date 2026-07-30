@@ -1380,7 +1380,7 @@ namespace application::manager
             ImGui::PopStyleColor();
 
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.0f, 1.0f, 0.0f, 1.0f));
-            ImGui::Text("Version: %s", STARLIGHT_APP_VERSION);
+            ImGui::Text("Version: %s", "2.1.0-rc1");
             ImGui::SameLine();
             ImGui::Text("| Build: %s", STARLIGHT_GIT_COMMIT);
             ImGui::PopStyleColor();
