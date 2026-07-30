@@ -126,7 +126,6 @@ namespace application::rendering::map_editor
 
 		bool IsBancEntityRenderInfoCulled(const application::game::Scene::BancEntityRenderInfo& RenderInfo);
 
-		const glm::vec4 mClearColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 		ImVec2 mSceneWindowSize;
 		application::gl::Framebuffer* mSceneWindowFramebuffer = nullptr;
 

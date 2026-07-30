@@ -937,12 +937,12 @@ namespace application::rendering::map_editor
             if (mCurrentTextureLayer == 120)
             {
                 clicked = ImGui::ImageButton("CurrentTexture", (ImTextureID)(intptr_t)gTerrainHoleTexture, previewSize,
-                    ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), ImVec4(0.15f, 0.15f, 0.15f, 1.0f), ImVec4(1, 1, 1, 1));
+                    ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), ImGui::GetStyle().Colors[ImGuiCol_FrameBg], ImVec4(1, 1, 1, 1));
             }
             else
             {
                 clicked = ImGui::ImageButton("CurrentTexture", (ImTextureID)(intptr_t)gTerrainTextureArrayViews[mCurrentTextureLayer], previewSize,
-                    uv0, uv1, ImVec4(0.15f, 0.15f, 0.15f, 1.0f), ImVec4(1, 1, 1, 1));
+                    uv0, uv1, ImGui::GetStyle().Colors[ImGuiCol_FrameBg], ImVec4(1, 1, 1, 1));
             }
 
             if (clicked)
@@ -970,13 +970,13 @@ namespace application::rendering::map_editor
                     {
                         pick = ImGui::ImageButton(("TextureTile_" + std::to_string(i)).c_str(),
                             (ImTextureID)(intptr_t)gTerrainHoleTexture, ImVec2(Thumb, Thumb),
-                            ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), ImVec4(0.12f, 0.12f, 0.12f, 1.0f), ImVec4(1, 1, 1, 1));
+                            ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), ImGui::GetStyle().Colors[ImGuiCol_FrameBg], ImVec4(1, 1, 1, 1));
                     }
                     else
                     {
                         pick = ImGui::ImageButton(("TextureTile_" + std::to_string(i)).c_str(),
                             (ImTextureID)(intptr_t)gTerrainTextureArrayViews[i], ImVec2(Thumb, Thumb),
-                            uv0, uv1, ImVec4(0.12f, 0.12f, 0.12f, 1.0f), ImVec4(1, 1, 1, 1));
+                            uv0, uv1, ImGui::GetStyle().Colors[ImGuiCol_FrameBg], ImVec4(1, 1, 1, 1));
                     }
                     if (pick)
                     {

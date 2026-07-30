@@ -451,6 +451,14 @@ namespace application::rendering::ainb
 		Config.SettingsFile = nullptr;
 		Config.SaveSettings = UIAINBEditor::NodeEditorSaveSettings;
 		mNodeEditorContext = ed::CreateEditor(&Config);
+		RefreshTheme();
+	}
+
+	void UIAINBEditor::RefreshTheme()
+	{
+		ed::SetCurrentEditor(mNodeEditorContext);
+		ed::GetStyle().Colors[ed::StyleColor_Bg] = application::manager::UIMgr::GetNodeEditorBgColor();
+		ed::GetStyle().Colors[ed::StyleColor_Grid] = application::manager::UIMgr::GetNodeEditorGridColor();
 	}
 
 	void UIAINBEditor::DrawGeneralWindow()

@@ -5,6 +5,7 @@
 #include <util/BinaryVectorWriter.h>
 #include <util/Logger.h>
 #include <manager/ProjectMgr.h>
+#include <manager/UIMgr.h>
 
 namespace application::file::tool
 {
@@ -25,9 +26,9 @@ namespace application::file::tool
 		}
 
 		uint8_t Version = Reader.ReadUInt8();
-		if (Version != 0x02 && Version != 0x03)
+		if (Version != 0x02 && Version != 0x03 && Version != 0x04 && Version != 0x05 && Version != 0x06)
 		{
-			application::util::Logger::Error("PathConfig", "Version invalid, expected 0x02 or 0x03. Please delete the path config file and reconfigure your paths");
+			application::util::Logger::Error("PathConfig", "Version invalid, expected 0x02 through 0x06. Please delete the path config file and reconfigure your paths");
 			return;
 		}
 
@@ -40,6 +41,26 @@ namespace application::file::tool
 		if (Version >= 0x03)
 			application::manager::ProjectMgr::gProjectsEnabled = Reader.ReadUInt8() != 0;
 
+		if (Version >= 0x04)
+			application::manager::UIMgr::gThemeIndex = Reader.ReadUInt8();
+
+		if (Version >= 0x05)
+			application::manager::UIMgr::gBackgroundThemeIndex = Reader.ReadUInt8();
+
+		if (Version >= 0x06)
+		{
+			application::manager::UIMgr::gRecentTools.clear();
+			uint8_t RecentToolCount = Reader.ReadUInt8();
+			for (uint8_t i = 0; i < RecentToolCount; i++)
+			{
+				uint8_t RawType = Reader.ReadUInt8();
+				auto ParsedType = static_cast<application::rendering::UIWindowBase::WindowType>(RawType);
+				if (RawType <= static_cast<uint8_t>(application::rendering::UIWindowBase::WindowType::EDITOR_PLUGINS)
+					&& ParsedType != application::rendering::UIWindowBase::WindowType::GENERAL_CONTENT_BROWSER)
+					application::manager::UIMgr::gRecentTools.push_back(ParsedType);
+			}
+		}
+
 		application::util::FileUtil::ValidatePaths();
 
 		application::util::Logger::Info("PathConfig", "Loaded paths");
@@ -50,13 +71,19 @@ namespace application::file::tool
 		application::util::BinaryVectorWriter Writer;
 
 		Writer.WriteBytes("EPATHCFG"); //Magic
-		Writer.WriteInteger(0x03, sizeof(uint8_t)); //Version
+		Writer.WriteInteger(0x06, sizeof(uint8_t)); //Version
 
 		Writer.WriteInteger(application::util::FileUtil::gRomFSPath.size(), sizeof(uint16_t));
 
 		Writer.WriteBytes(application::util::FileUtil::gRomFSPath.c_str());
 
 		Writer.WriteInteger(application::manager::ProjectMgr::gProjectsEnabled ? 1 : 0, sizeof(uint8_t));
+		Writer.WriteInteger(application::manager::UIMgr::gThemeIndex, sizeof(uint8_t));
+		Writer.WriteInteger(application::manager::UIMgr::gBackgroundThemeIndex, sizeof(uint8_t));
+
+		Writer.WriteInteger(application::manager::UIMgr::gRecentTools.size(), sizeof(uint8_t));
+		for (application::rendering::UIWindowBase::WindowType Type : application::manager::UIMgr::gRecentTools)
+			Writer.WriteInteger(static_cast<uint8_t>(Type), sizeof(uint8_t));
 
 		application::util::FileUtil::WriteFile(Path, Writer.GetData());
 

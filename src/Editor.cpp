@@ -164,6 +164,8 @@ namespace application
         application::file::tool::ProjectConfigFile::Load(application::util::FileUtil::GetWorkingDirFilePath("Project.eprojcfg"));
 
         application::file::tool::PathConfigFile::Load(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
+        application::manager::UIMgr::ApplyBackgroundTheme(application::manager::UIMgr::gBackgroundThemeIndex);
+        application::manager::UIMgr::ApplyTheme(application::manager::UIMgr::gThemeIndex);
         application::file::tool::TkmmConfigPaths::TryPrefillRomFsFromTkmm();
         application::file::tool::GitIdentityFile::Load(application::util::FileUtil::GetWorkingDirFilePath("Identity.egit"));
         application::file::tool::LicenseFile::gNoLicenseFileFound = !application::util::FileUtil::FileExists(application::util::FileUtil::GetWorkingDirFilePath("License.elicense"));
@@ -352,6 +354,7 @@ namespace application
         application::manager::UIMgr::Cleanup();
         application::file::tool::AdditionalAINBNodes::Save(application::util::FileUtil::GetWorkingDirFilePath("Nodes.ainode.byml"));
         application::file::tool::ProjectConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Project.eprojcfg"));
+        application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
         if(!application::util::GitManager::gUserIdentity.mAccessToken.empty()) application::file::tool::GitIdentityFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Identity.egit"));
     }
 }

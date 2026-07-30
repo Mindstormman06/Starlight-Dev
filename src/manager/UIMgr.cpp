@@ -6,6 +6,8 @@
 #include "imgui_stdlib.h"
 #include <rendering/ImGuizmo.h>
 #include <cassert>
+#include <cfloat>
+#include <algorithm>
 #include <util/Logger.h>
 #include <manager/PopUpMgr.h>
 #include <manager/TextureMgr.h>
@@ -26,11 +28,14 @@
 #include <util/IconsFontAwesome6.h>
 #include <util/fa-solid-900.h>
 #include <util/ImGuiNotify.h>
+#include <util/portable-file-dialogs.h>
 
 #if defined(_WIN32)
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include <windows.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 #endif
 
 #define TOOL_IMGUI_VIEWPORTS_ENABLED 0
@@ -68,15 +73,373 @@ namespace application::manager
             }
         }
 #endif
+
+        struct ThemePreset
+        {
+            const char* Name;
+            ImVec4 Hover;
+            ImVec4 Active;
+        };
+
+        const ThemePreset gThemePresets[] = {
+            { "Starlight Blue", ImVec4(0.114f, 0.592f, 0.925f, 1.0f), ImVec4(0.0f, 0.467f, 0.784f, 1.0f) },
+            { "Violet",         ImVec4(0.580f, 0.420f, 0.930f, 1.0f), ImVec4(0.400f, 0.220f, 0.780f, 1.0f) },
+            { "Emerald",        ImVec4(0.204f, 0.780f, 0.349f, 1.0f), ImVec4(0.106f, 0.549f, 0.220f, 1.0f) },
+            { "Amber",          ImVec4(0.949f, 0.600f, 0.106f, 1.0f), ImVec4(0.800f, 0.451f, 0.0f, 1.0f) },
+            { "Rose",           ImVec4(0.929f, 0.325f, 0.427f, 1.0f), ImVec4(0.780f, 0.157f, 0.278f, 1.0f) },
+        };
+
+        constexpr int gThemePresetCount = sizeof(gThemePresets) / sizeof(gThemePresets[0]);
+
+        struct BackgroundThemePreset
+        {
+            const char* Name;
+            ImVec4 Text;
+            ImVec4 TextDisabled;
+            ImVec4 BaseBg;          // WindowBg/ChildBg/PopupBg/TitleBg*/Tab/TabUnfocused/NavHighlight/DragDropTarget
+            ImVec4 SurfaceBg;       // FrameBg/MenuBarBg/ScrollbarBg/Button/Header
+            ImVec4 BorderColor;     // Border/BorderShadow/Separator*
+            ImVec4 GrabColor;       // ScrollbarGrab/ResizeGripActive
+            ImVec4 GrabHoverColor;  // ScrollbarGrabHovered/ScrollbarGrabActive
+            ImVec4 TableHeaderBg;
+            ImVec4 TableBorderStrong;
+            ImVec4 TableBorderLight;
+            ImVec4 TableRowBgAlt;
+            ImVec4 NavWindowingDimBg;
+            glm::vec4 ViewportClearColor;
+            ImVec4 NodeEditorBg;
+            ImVec4 NodeEditorGrid;
+        };
+
+        const BackgroundThemePreset gBackgroundThemePresets[] = {
+            // Light
+            { "Light",
+                ImVec4(0.09f, 0.09f, 0.10f, 1.0f), ImVec4(0.50f, 0.50f, 0.52f, 1.0f),
+                ImVec4(0.94f, 0.94f, 0.95f, 1.0f), ImVec4(0.86f, 0.86f, 0.88f, 1.0f),
+                ImVec4(0.75f, 0.75f, 0.77f, 1.0f), ImVec4(0.70f, 0.70f, 0.73f, 1.0f), ImVec4(0.60f, 0.60f, 0.64f, 1.0f),
+                ImVec4(0.82f, 0.82f, 0.85f, 1.0f), ImVec4(0.65f, 0.65f, 0.68f, 1.0f), ImVec4(0.78f, 0.78f, 0.81f, 1.0f),
+                ImVec4(0.0f, 0.0f, 0.0f, 0.04f), ImVec4(0.2f, 0.2f, 0.2f, 0.2f),
+                glm::vec4(0.62f, 0.64f, 0.67f, 1.0f),
+                ImVec4(0.86f, 0.86f, 0.88f, 0.94f), ImVec4(0.55f, 0.55f, 0.58f, 0.35f)
+            },
+            // Slate
+            { "Slate",
+                ImVec4(0.95f, 0.96f, 0.98f, 1.0f), ImVec4(0.55f, 0.58f, 0.62f, 1.0f),
+                ImVec4(0.180f, 0.196f, 0.216f, 1.0f), ImVec4(0.235f, 0.255f, 0.278f, 1.0f),
+                ImVec4(0.35f, 0.38f, 0.42f, 1.0f), ImVec4(0.35f, 0.38f, 0.42f, 1.0f), ImVec4(0.42f, 0.45f, 0.50f, 1.0f),
+                ImVec4(0.22f, 0.24f, 0.27f, 1.0f), ImVec4(0.38f, 0.41f, 0.46f, 1.0f), ImVec4(0.28f, 0.30f, 0.34f, 1.0f),
+                ImVec4(1.0f, 1.0f, 1.0f, 0.05f), ImVec4(0.8f, 0.8f, 0.85f, 0.2f),
+                glm::vec4(0.09f, 0.10f, 0.12f, 1.0f),
+                ImVec4(0.14f, 0.155f, 0.175f, 0.90f), ImVec4(0.45f, 0.48f, 0.52f, 0.15f)
+            },
+            // Gunmetal (default)
+            { "Gunmetal",
+                ImVec4(1.0f, 1.0f, 1.0f, 1.0f), ImVec4(0.592f, 0.592f, 0.592f, 1.0f),
+                ImVec4(0.145f, 0.145f, 0.149f, 1.0f), ImVec4(0.2f, 0.2f, 0.216f, 1.0f),
+                ImVec4(0.306f, 0.306f, 0.306f, 1.0f), ImVec4(0.322f, 0.322f, 0.333f, 1.0f), ImVec4(0.353f, 0.353f, 0.373f, 1.0f),
+                ImVec4(0.188f, 0.188f, 0.2f, 1.0f), ImVec4(0.31f, 0.31f, 0.349f, 1.0f), ImVec4(0.227f, 0.227f, 0.247f, 1.0f),
+                ImVec4(1.0f, 1.0f, 1.0f, 0.06f), ImVec4(0.8f, 0.8f, 0.8f, 0.2f),
+                glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
+                ImVec4(0.235f, 0.235f, 0.275f, 0.784f), ImVec4(0.471f, 0.471f, 0.471f, 0.157f)
+            },
+            // Midnight
+            { "Midnight",
+                ImVec4(0.92f, 0.92f, 0.94f, 1.0f), ImVec4(0.45f, 0.45f, 0.48f, 1.0f),
+                ImVec4(0.055f, 0.055f, 0.065f, 1.0f), ImVec4(0.09f, 0.09f, 0.10f, 1.0f),
+                ImVec4(0.18f, 0.18f, 0.20f, 1.0f), ImVec4(0.16f, 0.16f, 0.18f, 1.0f), ImVec4(0.22f, 0.22f, 0.25f, 1.0f),
+                ImVec4(0.08f, 0.08f, 0.09f, 1.0f), ImVec4(0.18f, 0.18f, 0.21f, 1.0f), ImVec4(0.13f, 0.13f, 0.15f, 1.0f),
+                ImVec4(1.0f, 1.0f, 1.0f, 0.04f), ImVec4(0.5f, 0.5f, 0.55f, 0.2f),
+                glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
+                ImVec4(0.02f, 0.02f, 0.025f, 0.95f), ImVec4(0.30f, 0.30f, 0.32f, 0.12f)
+            },
+        };
+
+        constexpr int gBackgroundThemePresetCount = sizeof(gBackgroundThemePresets) / sizeof(gBackgroundThemePresets[0]);
+        constexpr int gDefaultBackgroundThemeIndex = 2; // Gunmetal
+
+        const application::rendering::UIWindowBase::WindowType kDefaultToolOrder[] = {
+            application::rendering::UIWindowBase::WindowType::EDITOR_MAP,
+            application::rendering::UIWindowBase::WindowType::EDITOR_AINB,
+            application::rendering::UIWindowBase::WindowType::EDITOR_ACTOR,
+            application::rendering::UIWindowBase::WindowType::EDITOR_COLLISION,
+            application::rendering::UIWindowBase::WindowType::EDITOR_PLUGINS,
+        };
+
+        const char* GetToolDisplayName(application::rendering::UIWindowBase::WindowType Type)
+        {
+            switch (Type)
+            {
+            case application::rendering::UIWindowBase::WindowType::EDITOR_MAP: return "Map Editor";
+            case application::rendering::UIWindowBase::WindowType::EDITOR_AINB: return "AINB Editor";
+            case application::rendering::UIWindowBase::WindowType::EDITOR_ACTOR: return "Actor Editor";
+            case application::rendering::UIWindowBase::WindowType::EDITOR_COLLISION: return "Collision Generator";
+            case application::rendering::UIWindowBase::WindowType::EDITOR_PLUGINS: return "Plugins";
+            default: return "Unknown";
+            }
+        }
+
+        const char* GetToolIcon(application::rendering::UIWindowBase::WindowType Type)
+        {
+            switch (Type)
+            {
+            case application::rendering::UIWindowBase::WindowType::EDITOR_MAP: return ICON_FA_MAP;
+            case application::rendering::UIWindowBase::WindowType::EDITOR_AINB: return ICON_FA_DIAGRAM_PROJECT;
+            case application::rendering::UIWindowBase::WindowType::EDITOR_ACTOR: return ICON_FA_PERSON;
+            case application::rendering::UIWindowBase::WindowType::EDITOR_COLLISION: return ICON_FA_SHAPES;
+            case application::rendering::UIWindowBase::WindowType::EDITOR_PLUGINS: return ICON_FA_PLUG;
+            default: return ICON_FA_PUZZLE_PIECE;
+            }
+        }
+
+        void LaunchTool(application::rendering::UIWindowBase::WindowType Type)
+        {
+            switch (Type)
+            {
+            case application::rendering::UIWindowBase::WindowType::EDITOR_MAP:
+                UIMgr::OpenWindow(std::make_unique<application::rendering::map_editor::UIMapEditor>());
+                break;
+            case application::rendering::UIWindowBase::WindowType::EDITOR_AINB:
+                UIMgr::OpenWindow(std::make_unique<application::rendering::ainb::UIAINBEditor>());
+                break;
+            case application::rendering::UIWindowBase::WindowType::EDITOR_ACTOR:
+                UIMgr::OpenWindow(std::make_unique<application::rendering::actor::UIActorTool>());
+                break;
+            case application::rendering::UIWindowBase::WindowType::EDITOR_COLLISION:
+                UIMgr::OpenWindow(std::make_unique<application::rendering::collision::UICollisionGenerator>());
+                break;
+            case application::rendering::UIWindowBase::WindowType::EDITOR_PLUGINS:
+                UIMgr::OpenWindow(std::make_unique<application::rendering::plugin::UIPlugins>());
+                break;
+            default:
+                break;
+            }
+        }
+
+        void OpenPreferencesPopUp()
+        {
+            UIMgr::gSettingsPopUp.Open([](application::rendering::popup::PopUpBuilder& Builder)
+                {
+                    application::util::FileUtil::ValidatePaths();
+                    application::Editor::InitializeRomFSPathDependant();
+
+                    application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
+                });
+        }
+
+        // Home tab fonts are baked at kFontOversample times their intended on-screen size so that
+        // scaling them up to fill a large/fullscreen window (via explicit font_size in AddText,
+        // never via SetWindowFontScale) stays a downscale of the baked bitmap, not a magnification
+        // of it - that's what actually causes ImGui bitmap-font blur when a window grows.
+        constexpr float kFontOversample = 2.2f;
+        constexpr float kLogoTargetSize = 56.0f;
+        constexpr float kHeadingTargetSize = 24.0f;
+        constexpr float kIconTargetSize = 32.0f;
+        constexpr float kLabelTargetSize = 20.0f;
+
+        bool gHomeWindowFirstFrame = true;
+
+        // Custom button: draws a themed background rect plus an oversized icon (in a fixed-width slot
+        // so icons line up across buttons) and an accent-colored label with room before the right edge.
+        // Font sizes are requested explicitly (never via SetWindowFontScale) so they only ever downscale
+        // from the oversampled bake - see kFontOversample above for why that matters. DpiScale here is
+        // the monitor's DPI factor, NOT the Home tab's window-width Scale - buttons deliberately don't
+        // grow with the big logo/heading text, only with actual display DPI.
+        bool DrawToolButton(const char* Icon, const std::string& Label, const ImVec2& Size, float DpiScale)
+        {
+            ImGuiWindow* Window = ImGui::GetCurrentWindow();
+            ImGuiID Id = Window->GetID(Label.c_str());
+            ImVec2 Pos = ImGui::GetCursorScreenPos();
+            ImRect Bb(Pos, ImVec2(Pos.x + Size.x, Pos.y + Size.y));
+
+            ImGui::ItemSize(Size);
+            if (!ImGui::ItemAdd(Bb, Id))
+                return false;
+
+            bool Hovered, Held;
+            bool Pressed = ImGui::ButtonBehavior(Bb, Id, &Hovered, &Held);
+
+            ImDrawList* DrawList = ImGui::GetWindowDrawList();
+            ImU32 BgColor = ImGui::GetColorU32(Held ? ImGuiCol_ButtonActive : (Hovered ? ImGuiCol_ButtonHovered : ImGuiCol_Button));
+            DrawList->AddRectFilled(Bb.Min, Bb.Max, BgColor, ImGui::GetStyle().FrameRounding);
+
+            const float IconSlotWidth = Size.x * 0.22f;
+
+            ImFont* IconFont = UIMgr::gBigIconFont ? UIMgr::gBigIconFont : ImGui::GetFont();
+            float IconRenderSize = kIconTargetSize * DpiScale;
+            ImVec2 IconSize = IconFont->CalcTextSizeA(IconRenderSize, FLT_MAX, 0.0f, Icon);
+            ImVec2 IconPos(Bb.Min.x + (IconSlotWidth - IconSize.x) * 0.5f, Bb.Min.y + (Size.y - IconSize.y) * 0.5f);
+            DrawList->AddText(IconFont, IconRenderSize, IconPos, ImGui::GetColorU32(ImGuiCol_Text), Icon);
+
+            ImFont* LabelFont = UIMgr::gButtonLabelFont ? UIMgr::gButtonLabelFont : ImGui::GetFont();
+            float LabelRenderSize = kLabelTargetSize * DpiScale;
+            ImVec2 LabelSize = LabelFont->CalcTextSizeA(LabelRenderSize, FLT_MAX, 0.0f, Label.c_str());
+            ImVec2 LabelPos(Bb.Min.x + IconSlotWidth, Bb.Min.y + (Size.y - LabelSize.y) * 0.5f);
+            DrawList->AddText(LabelFont, LabelRenderSize, LabelPos, ImGui::ColorConvertFloat4ToU32(UIMgr::GetAccentColor()), Label.c_str());
+
+            return Pressed;
+        }
+
+        // Decorative watermark pinned to the bottom-right corner of the Home window, tinted with the
+        // current accent color. Source asset is expected to be a white shape on transparency so the
+        // tint multiply reads as a solid accent-colored silhouette. Scales off the same factor as the
+        // rest of the tab instead of a window-percentage-with-a-cap, so it keeps growing on big/fullscreen
+        // windows instead of topping out early.
+        void DrawHomeDecoration(float Scale)
+        {
+            application::gl::Texture* DecorationTexture = application::manager::TextureMgr::GetAssetTexture("HomeDecoration");
+            if (!DecorationTexture || DecorationTexture->mWidth <= 0 || DecorationTexture->mHeight <= 0)
+                return;
+
+            // The Texture class bakes GL_NEAREST magnification (fine for pixel-art icons), which looks
+            // blocky once this watermark is scaled up; force smooth bilinear sampling for this texture only.
+            static bool FilterConfigured = false;
+            if (!FilterConfigured)
+            {
+                glBindTexture(GL_TEXTURE_2D, DecorationTexture->mID);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                FilterConfigured = true;
+            }
+
+            ImVec2 WindowPos = ImGui::GetWindowPos();
+            ImVec2 WindowSize = ImGui::GetWindowSize();
+
+            constexpr float BaseDecorationWidth = 320.0f;
+            float TargetWidth = BaseDecorationWidth * Scale;
+            float AspectRatio = static_cast<float>(DecorationTexture->mHeight) / static_cast<float>(DecorationTexture->mWidth);
+            float TargetHeight = TargetWidth * AspectRatio;
+
+            ImVec2 BottomRight(WindowPos.x + WindowSize.x, WindowPos.y + WindowSize.y);
+            ImVec2 TopLeft(BottomRight.x - TargetWidth, BottomRight.y - TargetHeight);
+
+            ImVec4 Tint = UIMgr::GetAccentColor();
+            Tint.w = 0.18f;
+
+            // Texture.cpp loads with stbi_set_flip_vertically_on_load(true), which flips the source
+            // image into GL's bottom-up row order; sampling it with straight (0,0)-(1,1) UVs therefore
+            // renders it upside down, so the V coordinates are swapped here to compensate.
+            ImGui::GetWindowDrawList()->AddImage((ImTextureID)(intptr_t)DecorationTexture->mID, TopLeft, BottomRight,
+                ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), ImGui::ColorConvertFloat4ToU32(Tint));
+        }
+
+        void DrawHomeWindow()
+        {
+            if (gHomeWindowFirstFrame)
+            {
+                ImGui::SetNextWindowDockID(UIMgr::gDockMain);
+                gHomeWindowFirstFrame = false;
+            }
+
+            if (!ImGui::Begin("Home", nullptr, ImGuiWindowFlags_NoCollapse))
+            {
+                ImGui::End();
+                return;
+            }
+
+            // The logo/heading text and the corner decoration scale off the window's own width so the
+            // home screen reads consistently whether it's a small docked panel or the full viewport.
+            // This Scale is only ever used to pick an explicit font_size/image size to request - never
+            // via SetWindowFontScale, which would blur bitmap fonts/textures by magnifying them past
+            // their baked resolution.
+            constexpr float ReferenceWidth = 1280.0f;
+            constexpr float MinScale = 0.6f;
+            constexpr float MaxScale = 2.0f;
+
+            float Scale = ImGui::GetWindowSize().x / ReferenceWidth;
+            Scale = Scale < MinScale ? MinScale : (Scale > MaxScale ? MaxScale : Scale);
+
+            // Buttons deliberately do NOT use the above Scale - growing them in lockstep with the big
+            // logo text made them look oversized on wide windows. They only track the monitor's actual
+            // DPI factor, so they stay a steady, readable size regardless of window width.
+            const float DpiScale = ImGui::GetPlatformIO().Monitors[0].DpiScale;
+
+            DrawHomeDecoration(Scale);
+
+            ImDrawList* DrawList = ImGui::GetWindowDrawList();
+            ImVec2 ContentStart = ImGui::GetCursorScreenPos();
+            const float Margin = 32.0f * Scale;
+            ImVec2 LogoPos(ContentStart.x + Margin, ContentStart.y + Margin);
+
+            ImFont* LogoFont = UIMgr::gLogoFont ? UIMgr::gLogoFont : ImGui::GetFont();
+            float LogoRenderSize = kLogoTargetSize * Scale;
+            ImVec2 LogoSize = LogoFont->CalcTextSizeA(LogoRenderSize, FLT_MAX, 0.0f, "Starlight");
+            DrawList->AddText(LogoFont, LogoRenderSize, LogoPos, ImGui::ColorConvertFloat4ToU32(UIMgr::GetAccentColor()), "Starlight");
+
+            // Heading sits to the right of the logo, vertically centered against the logo's own height.
+            const float ColumnGap = 48.0f * Scale;
+            ImFont* HeadingFont = UIMgr::gHeadingFont ? UIMgr::gHeadingFont : ImGui::GetFont();
+            float HeadingRenderSize = kHeadingTargetSize * Scale;
+            const char* HeadingText = "How would you like to get started?";
+            ImVec2 HeadingSize = HeadingFont->CalcTextSizeA(HeadingRenderSize, FLT_MAX, 0.0f, HeadingText);
+            ImVec2 HeadingPos(LogoPos.x + LogoSize.x + ColumnGap, LogoPos.y + (LogoSize.y - HeadingSize.y) * 0.5f);
+            DrawList->AddText(HeadingFont, HeadingRenderSize, HeadingPos, ImGui::GetColorU32(ImGuiCol_Text), HeadingText);
+
+            // Buttons form a single left-aligned column starting under the logo, below the whole
+            // logo+heading row (not tucked under just the heading's side of it).
+            float RowBottom = LogoPos.y + LogoSize.y;
+            float HeadingBottom = HeadingPos.y + HeadingSize.y;
+            if (HeadingBottom > RowBottom)
+                RowBottom = HeadingBottom;
+
+            ImVec2 ButtonAreaPos(LogoPos.x, RowBottom + 28.0f * Scale);
+            const ImVec2 ButtonSize = ImVec2(300.0f * DpiScale, 54.0f * DpiScale);
+            const float ButtonSpacing = 10.0f * DpiScale;
+
+            if (!application::util::FileUtil::gPathsValid)
+            {
+                ImGui::SetCursorScreenPos(ButtonAreaPos);
+                if (DrawToolButton(ICON_FA_GEAR, "Configure", ButtonSize, DpiScale))
+                {
+                    OpenPreferencesPopUp();
+                }
+            }
+            else
+            {
+                std::vector<application::rendering::UIWindowBase::WindowType> ToolsToShow;
+
+                if (!UIMgr::gRecentTools.empty())
+                {
+                    for (size_t i = 0; i < UIMgr::gRecentTools.size() && ToolsToShow.size() < 3; i++)
+                        ToolsToShow.push_back(UIMgr::gRecentTools[i]);
+                }
+                else
+                {
+                    for (application::rendering::UIWindowBase::WindowType Type : kDefaultToolOrder)
+                        ToolsToShow.push_back(Type);
+                }
+
+                ImVec2 CurrentButtonPos = ButtonAreaPos;
+                for (application::rendering::UIWindowBase::WindowType Type : ToolsToShow)
+                {
+                    ImGui::SetCursorScreenPos(CurrentButtonPos);
+                    if (DrawToolButton(GetToolIcon(Type), GetToolDisplayName(Type), ButtonSize, DpiScale))
+                    {
+                        LaunchTool(Type);
+                    }
+                    CurrentButtonPos.y += ButtonSize.y + ButtonSpacing;
+                }
+            }
+
+            ImGui::End();
+        }
     }
 
 	GLFWwindow* UIMgr::gWindow = nullptr;
-    const ImVec4 UIMgr::gClearColor = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+    ImVec4 UIMgr::gClearColor = ImVec4(0.145f, 0.145f, 0.149f, 1.00f);
+    glm::vec4 UIMgr::gViewportClearColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
     std::vector<std::unique_ptr<application::rendering::UIWindowBase>> UIMgr::gWindows;
     std::vector<std::unique_ptr<application::rendering::UIWindowBase>> UIMgr::gWaitingWindows;
     unsigned int UIMgr::gWindowId = 0;
     bool UIMgr::gFirstFrame = true;
     bool UIMgr::gASTCSupported = false;
+    int UIMgr::gThemeIndex = 0;
+    int UIMgr::gBackgroundThemeIndex = gDefaultBackgroundThemeIndex;
+    ImFont* UIMgr::gLogoFont = nullptr;
+    ImFont* UIMgr::gHeadingFont = nullptr;
+    ImFont* UIMgr::gBigIconFont = nullptr;
+    ImFont* UIMgr::gButtonLabelFont = nullptr;
+    std::vector<application::rendering::UIWindowBase::WindowType> UIMgr::gRecentTools;
     ImGuiID UIMgr::gDockMain;
 	ImGuiID UIMgr::gDockBottom;
     application::rendering::popup::PopUpBuilder UIMgr::gSettingsPopUp;
@@ -137,6 +500,182 @@ namespace application::manager
 	{
         application::util::Logger::Error("GLFW", "Code: %i, Description: %s", error, description);
 	}
+
+    int UIMgr::GetThemeCount()
+    {
+        return gThemePresetCount;
+    }
+
+    const char* UIMgr::GetThemeName(int Index)
+    {
+        if (Index < 0 || Index >= gThemePresetCount)
+            Index = 0;
+
+        return gThemePresets[Index].Name;
+    }
+
+    void UIMgr::ApplyTheme(int Index)
+    {
+        if (Index < 0 || Index >= gThemePresetCount)
+            Index = 0;
+
+        gThemeIndex = Index;
+        const ThemePreset& Preset = gThemePresets[Index];
+        ImGuiStyle& Style = ImGui::GetStyle();
+
+        Style.Colors[ImGuiCol_FrameBgHovered] = Preset.Hover;
+        Style.Colors[ImGuiCol_FrameBgActive] = Preset.Active;
+        Style.Colors[ImGuiCol_CheckMark] = Preset.Active;
+        Style.Colors[ImGuiCol_SliderGrab] = Preset.Hover;
+        Style.Colors[ImGuiCol_SliderGrabActive] = Preset.Active;
+        Style.Colors[ImGuiCol_ButtonHovered] = Preset.Hover;
+        Style.Colors[ImGuiCol_ButtonActive] = Preset.Hover;
+        Style.Colors[ImGuiCol_HeaderHovered] = Preset.Hover;
+        Style.Colors[ImGuiCol_HeaderActive] = Preset.Active;
+        Style.Colors[ImGuiCol_TabHovered] = Preset.Hover;
+        Style.Colors[ImGuiCol_TabActive] = Preset.Active;
+        Style.Colors[ImGuiCol_TabUnfocusedActive] = Preset.Active;
+        Style.Colors[ImGuiCol_TabSelectedOverline] = Preset.Active;
+        Style.Colors[ImGuiCol_TabDimmedSelectedOverline] = Preset.Active;
+        Style.Colors[ImGuiCol_DockingPreview] = Preset.Active;
+        Style.Colors[ImGuiCol_TextLink] = Preset.Hover;
+        Style.Colors[ImGuiCol_PlotLines] = Preset.Active;
+        Style.Colors[ImGuiCol_PlotLinesHovered] = Preset.Hover;
+        Style.Colors[ImGuiCol_PlotHistogram] = Preset.Active;
+        Style.Colors[ImGuiCol_PlotHistogramHovered] = Preset.Hover;
+        Style.Colors[ImGuiCol_TextSelectedBg] = Preset.Active;
+    }
+
+    ImVec4 UIMgr::GetAccentColor()
+    {
+        return gThemePresets[gThemeIndex].Active;
+    }
+
+    int UIMgr::GetBackgroundThemeCount()
+    {
+        return gBackgroundThemePresetCount;
+    }
+
+    const char* UIMgr::GetBackgroundThemeName(int Index)
+    {
+        if (Index < 0 || Index >= gBackgroundThemePresetCount)
+            Index = gDefaultBackgroundThemeIndex;
+
+        return gBackgroundThemePresets[Index].Name;
+    }
+
+    ImVec4 UIMgr::GetNodeEditorBgColor()
+    {
+        return gBackgroundThemePresets[gBackgroundThemeIndex].NodeEditorBg;
+    }
+
+    ImVec4 UIMgr::GetNodeEditorGridColor()
+    {
+        return gBackgroundThemePresets[gBackgroundThemeIndex].NodeEditorGrid;
+    }
+
+#if defined(_WIN32)
+    namespace
+    {
+        // Recolors the native window chrome (title bar) to match the current background theme instead
+        // of leaving it as Windows' default bright white, using DWM APIs. DWMWA_USE_IMMERSIVE_DARK_MODE
+        // has been supported since Windows 10 2004; DWMWA_CAPTION_COLOR/DWMWA_TEXT_COLOR are Windows 11+
+        // only and DwmSetWindowAttribute simply (harmlessly) fails on older systems that lack them.
+        void UpdateTitleBarTheme()
+        {
+            if (!UIMgr::gWindow)
+                return;
+
+            HWND Hwnd = glfwGetWin32Window(UIMgr::gWindow);
+            if (!Hwnd)
+                return;
+
+            const BackgroundThemePreset& Preset = gBackgroundThemePresets[UIMgr::gBackgroundThemeIndex];
+
+            float Luminance = 0.2126f * Preset.BaseBg.x + 0.7152f * Preset.BaseBg.y + 0.0722f * Preset.BaseBg.z;
+            BOOL UseDarkMode = Luminance < 0.5f ? TRUE : FALSE;
+            DwmSetWindowAttribute(Hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &UseDarkMode, sizeof(UseDarkMode));
+
+            auto ToColorRef = [](const ImVec4& Color) -> COLORREF
+            {
+                BYTE R = static_cast<BYTE>(ImClamp(Color.x, 0.0f, 1.0f) * 255.0f + 0.5f);
+                BYTE G = static_cast<BYTE>(ImClamp(Color.y, 0.0f, 1.0f) * 255.0f + 0.5f);
+                BYTE B = static_cast<BYTE>(ImClamp(Color.z, 0.0f, 1.0f) * 255.0f + 0.5f);
+                return RGB(R, G, B);
+            };
+
+            COLORREF CaptionColor = ToColorRef(Preset.BaseBg);
+            DwmSetWindowAttribute(Hwnd, DWMWA_CAPTION_COLOR, &CaptionColor, sizeof(CaptionColor));
+
+            COLORREF TextColor = ToColorRef(Preset.Text);
+            DwmSetWindowAttribute(Hwnd, DWMWA_TEXT_COLOR, &TextColor, sizeof(TextColor));
+        }
+    }
+#endif
+
+    void UIMgr::ApplyBackgroundTheme(int Index)
+    {
+        if (Index < 0 || Index >= gBackgroundThemePresetCount)
+            Index = gDefaultBackgroundThemeIndex;
+
+        gBackgroundThemeIndex = Index;
+        const BackgroundThemePreset& Preset = gBackgroundThemePresets[Index];
+        ImGuiStyle& Style = ImGui::GetStyle();
+
+        Style.Colors[ImGuiCol_Text] = Preset.Text;
+        Style.Colors[ImGuiCol_TextDisabled] = Preset.TextDisabled;
+
+        Style.Colors[ImGuiCol_WindowBg] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_ChildBg] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_PopupBg] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_TitleBg] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_TitleBgActive] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_TitleBgCollapsed] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_Tab] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_TabUnfocused] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_ResizeGrip] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_NavHighlight] = Preset.BaseBg;
+        Style.Colors[ImGuiCol_DragDropTarget] = Preset.BaseBg;
+
+        Style.Colors[ImGuiCol_FrameBg] = Preset.SurfaceBg;
+        Style.Colors[ImGuiCol_MenuBarBg] = Preset.SurfaceBg;
+        Style.Colors[ImGuiCol_ScrollbarBg] = Preset.SurfaceBg;
+        Style.Colors[ImGuiCol_Button] = Preset.SurfaceBg;
+        Style.Colors[ImGuiCol_Header] = Preset.SurfaceBg;
+        Style.Colors[ImGuiCol_ResizeGripHovered] = Preset.SurfaceBg;
+
+        Style.Colors[ImGuiCol_Border] = Preset.BorderColor;
+        Style.Colors[ImGuiCol_BorderShadow] = Preset.BorderColor;
+        Style.Colors[ImGuiCol_Separator] = Preset.BorderColor;
+        Style.Colors[ImGuiCol_SeparatorHovered] = Preset.BorderColor;
+        Style.Colors[ImGuiCol_SeparatorActive] = Preset.BorderColor;
+
+        Style.Colors[ImGuiCol_ScrollbarGrab] = Preset.GrabColor;
+        Style.Colors[ImGuiCol_ResizeGripActive] = Preset.GrabColor;
+        Style.Colors[ImGuiCol_ScrollbarGrabHovered] = Preset.GrabHoverColor;
+        Style.Colors[ImGuiCol_ScrollbarGrabActive] = Preset.GrabHoverColor;
+
+        Style.Colors[ImGuiCol_TableHeaderBg] = Preset.TableHeaderBg;
+        Style.Colors[ImGuiCol_TableBorderStrong] = Preset.TableBorderStrong;
+        Style.Colors[ImGuiCol_TableBorderLight] = Preset.TableBorderLight;
+        Style.Colors[ImGuiCol_TableRowBgAlt] = Preset.TableRowBgAlt;
+        Style.Colors[ImGuiCol_NavWindowingDimBg] = Preset.NavWindowingDimBg;
+
+        gClearColor = Preset.BaseBg;
+        gViewportClearColor = Preset.ViewportClearColor;
+
+        for (auto& Window : gWindows)
+        {
+            if (Window->GetWindowType() == application::rendering::UIWindowBase::WindowType::EDITOR_AINB)
+            {
+                static_cast<application::rendering::ainb::UIAINBEditor*>(Window.get())->RefreshTheme();
+            }
+        }
+
+#if defined(_WIN32)
+        UpdateTitleBarTheme();
+#endif
+    }
 
 	bool UIMgr::Initialize()
 	{
@@ -280,17 +819,17 @@ namespace application::manager
         Style.Alpha = 1.0;
         Style.DisabledAlpha = 0.6000000238418579;
         Style.WindowPadding = ImVec2(8.0, 8.0);
-        Style.WindowRounding = 0.0;
+        Style.WindowRounding = 6.0;
         Style.WindowBorderSize = 1.0;
         Style.WindowMinSize = ImVec2(32.0, 32.0);
         Style.WindowTitleAlign = ImVec2(0.0, 0.5);
         Style.WindowMenuButtonPosition = ImGuiDir_Left;
-        Style.ChildRounding = 0.0;
+        Style.ChildRounding = 6.0;
         Style.ChildBorderSize = 1.0;
-        Style.PopupRounding = 0.0;
+        Style.PopupRounding = 6.0;
         Style.PopupBorderSize = 1.0;
-        Style.FramePadding = ImVec2(4.0, 3.0);
-        Style.FrameRounding = 0.0;
+        Style.FramePadding = ImVec2(6.0, 4.0);
+        Style.FrameRounding = 4.0;
         Style.FrameBorderSize = 0.0;
         Style.ItemSpacing = ImVec2(8.0, 4.0);
         Style.ItemInnerSpacing = ImVec2(4.0, 4.0);
@@ -298,10 +837,10 @@ namespace application::manager
         Style.IndentSpacing = 21.0;
         Style.ColumnsMinSpacing = 6.0;
         Style.ScrollbarSize = 14.0;
-        Style.ScrollbarRounding = 0.0;
+        Style.ScrollbarRounding = 8.0;
         Style.GrabMinSize = 10.0;
-        Style.GrabRounding = 0.0;
-        Style.TabRounding = 0.0;
+        Style.GrabRounding = 4.0;
+        Style.TabRounding = 4.0;
         Style.TabBorderSize = 0.0;
         Style.ColorButtonPosition = ImGuiDir_Right;
         Style.ButtonTextAlign = ImVec2(0.5, 0.5);
@@ -360,6 +899,9 @@ namespace application::manager
         Style.Colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.0, 1.0, 1.0, 0.699999988079071);
         Style.Colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.8, 0.8, 0.8, 0.2000000029802322);
         //Style.Colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.1450980392156863, 0.1450980392156863, 0.14901960784313725, 1.0);
+
+        ApplyBackgroundTheme(gBackgroundThemeIndex);
+        ApplyTheme(gThemeIndex);
 
         /*
         style.Colors[ImGuiCol_Text] = ImVec4(0.00f, 1.00f, 1.00f, 1.00f);
@@ -422,8 +964,38 @@ namespace application::manager
          * FontAwesome setup END
         */
 
+        // Home tab fonts are baked at kFontOversample times their intended display size (see comment
+        // near kFontOversample) so that scaling them up on a large/fullscreen window never magnifies
+        // past the baked bitmap - that's what causes ImGui text to blur when a window grows.
+        const float DpiScale = ImGui::GetPlatformIO().Monitors[0].DpiScale;
 
-        gSettingsPopUp.Title("Preferences").Width(550.0f).Height(320.0f).NeedsConfirmation(false).ContentDrawingFunction([](application::rendering::popup::PopUpBuilder& Builder)
+        const std::string LogoFontPath = application::util::FileUtil::GetAssetFilePath("Fonts/Hylia-Serif.otf");
+        if (application::util::FileUtil::FileExists(LogoFontPath))
+        {
+            ImFontConfig LogoConfig;
+            LogoConfig.OversampleH = 3;
+            LogoConfig.OversampleV = 3;
+            gLogoFont = io.Fonts->AddFontFromFileTTF(LogoFontPath.c_str(), kLogoTargetSize * kFontOversample * DpiScale, &LogoConfig);
+        }
+
+        ImFontConfig HeadingConfig;
+        HeadingConfig.OversampleH = 3;
+        HeadingConfig.OversampleV = 3;
+        gHeadingFont = io.Fonts->AddFontFromFileTTF(application::util::FileUtil::GetAssetFilePath("Fonts/Regular.ttf").c_str(), kHeadingTargetSize * kFontOversample * DpiScale, &HeadingConfig);
+
+        // Standalone (non-merged) larger FontAwesome atlas entry, used for oversized icons on the Home tab's tool buttons.
+        ImFontConfig bigIconConfig;
+        bigIconConfig.PixelSnapH = true;
+        gBigIconFont = io.Fonts->AddFontFromMemoryCompressedTTF(fa_solid_900_compressed_data, fa_solid_900_compressed_size, kIconTargetSize * kFontOversample * DpiScale, &bigIconConfig, iconsRanges);
+
+        // Larger body-text atlas entry, used for the Home tab's tool button labels.
+        ImFontConfig LabelConfig;
+        LabelConfig.OversampleH = 3;
+        LabelConfig.OversampleV = 3;
+        gButtonLabelFont = io.Fonts->AddFontFromFileTTF(application::util::FileUtil::GetAssetFilePath("Fonts/Regular.ttf").c_str(), kLabelTargetSize * kFontOversample * DpiScale, &LabelConfig);
+
+
+        gSettingsPopUp.Title("Preferences").Width(550.0f).Height(360.0f).NeedsConfirmation(false).ContentDrawingFunction([](application::rendering::popup::PopUpBuilder& Builder)
             {
                 ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(189 / 255.0f, 195 / 255.0f, 199 / 255.0f, 1.0f));
 
@@ -432,25 +1004,37 @@ namespace application::manager
                     if (ImGui::BeginTabItem("General"))
                     {
                         ImGui::NewLine();
-                        ImGui::Columns(2, "Paths");
-                        ImGui::Indent();
 
-                        ImGui::SetColumnWidth(0, ImGui::CalcTextSize("Model Dump Path").x + ImGui::GetStyle().ItemSpacing.x * 2 + ImGui::GetStyle().IndentSpacing);
+                        const float LabelWidth = ImGui::CalcTextSize("RomFS Path").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
 
+                        ImGui::AlignTextToFramePadding();
                         ImGui::Text("RomFS Path");
-                        ImGui::NextColumn();
-                        ImGui::PushItemWidth(ImGui::GetColumnWidth() - ImGui::GetStyle().ScrollbarSize);
+                        ImGui::SameLine(LabelWidth);
+
                         bool RomFSValid = !application::util::FileUtil::gRomFSPath.empty();
                         if (RomFSValid)
                             RomFSValid = application::util::FileUtil::FileExists(application::util::FileUtil::gRomFSPath + "/Pack/Bootup.Nin_NX_NVN.pack.zs");
 
+                        const float BrowseButtonWidth = ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+                        const float InputWidth = ImGui::GetContentRegionAvail().x - BrowseButtonWidth - ImGui::GetStyle().ItemSpacing.x;
+
+                        ImGui::SetNextItemWidth(InputWidth);
                         ImGui::PushStyleColor(ImGuiCol_FrameBg, RomFSValid ? ImVec4(0.06f, 0.26f, 0.07f, 1.0f) : ImVec4(0.26f, 0.06f, 0.07f, 1.0f));
                         ImGui::InputText("##RomFSPath", &application::util::FileUtil::gRomFSPath);
                         ImGui::PopStyleColor();
-                        ImGui::PopItemWidth();
 
-                        ImGui::Unindent();
-                        ImGui::Columns();
+                        ImGui::SameLine();
+                        if (ImGui::Button(ICON_FA_FOLDER_OPEN "##BrowseRomFSPath"))
+                        {
+                            auto Dialog = pfd::select_folder("Select RomFS Folder",
+                                application::util::FileUtil::gRomFSPath.empty() ? pfd::path::home() : application::util::FileUtil::gRomFSPath);
+
+                            std::string Selected = Dialog.result();
+                            if (!Selected.empty())
+                                application::util::FileUtil::gRomFSPath = Selected;
+                        }
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Browse for RomFS folder");
 
                         ImGui::EndTabItem();
                     }
@@ -458,8 +1042,69 @@ namespace application::manager
                     if (ImGui::BeginTabItem("Starlight"))
                     {
                         ImGui::NewLine();
-                        ImGui::Checkbox("Enable Projects", &application::manager::ProjectMgr::gProjectsEnabled);
-                        ImGui::TextWrapped("When disabled, the Projects menu is hidden and editors can be opened without selecting a project.");
+
+                        if (ImGui::BeginTabBar("StarlightSubTabs"))
+                        {
+                            if (ImGui::BeginTabItem("General"))
+                            {
+                                ImGui::NewLine();
+                                ImGui::Checkbox("Enable Projects", &application::manager::ProjectMgr::gProjectsEnabled);
+                                ImGui::TextWrapped("When disabled, the Projects menu is hidden and editors can be opened without selecting a project.");
+
+                                ImGui::EndTabItem();
+                            }
+
+                            if (ImGui::BeginTabItem("Theme"))
+                            {
+                                ImGui::NewLine();
+
+                                const float LabelWidth = ImGui::CalcTextSize("Background").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
+
+                                ImGui::AlignTextToFramePadding();
+                                ImGui::Text("Accent");
+                                ImGui::SameLine(LabelWidth);
+
+                                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                                if (ImGui::BeginCombo("##AccentTheme", application::manager::UIMgr::GetThemeName(application::manager::UIMgr::gThemeIndex)))
+                                {
+                                    for (int i = 0; i < application::manager::UIMgr::GetThemeCount(); i++)
+                                    {
+                                        bool Selected = application::manager::UIMgr::gThemeIndex == i;
+                                        if (ImGui::Selectable(application::manager::UIMgr::GetThemeName(i), Selected))
+                                        {
+                                            application::manager::UIMgr::ApplyTheme(i);
+                                        }
+                                        if (Selected)
+                                            ImGui::SetItemDefaultFocus();
+                                    }
+                                    ImGui::EndCombo();
+                                }
+
+                                ImGui::AlignTextToFramePadding();
+                                ImGui::Text("Background");
+                                ImGui::SameLine(LabelWidth);
+
+                                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+                                if (ImGui::BeginCombo("##BackgroundTheme", application::manager::UIMgr::GetBackgroundThemeName(application::manager::UIMgr::gBackgroundThemeIndex)))
+                                {
+                                    for (int i = 0; i < application::manager::UIMgr::GetBackgroundThemeCount(); i++)
+                                    {
+                                        bool Selected = application::manager::UIMgr::gBackgroundThemeIndex == i;
+                                        if (ImGui::Selectable(application::manager::UIMgr::GetBackgroundThemeName(i), Selected))
+                                        {
+                                            application::manager::UIMgr::ApplyBackgroundTheme(i);
+                                        }
+                                        if (Selected)
+                                            ImGui::SetItemDefaultFocus();
+                                    }
+                                    ImGui::EndCombo();
+                                }
+
+                                ImGui::EndTabItem();
+                            }
+
+                            ImGui::EndTabBar();
+                        }
 
                         ImGui::EndTabItem();
                     }
@@ -587,6 +1232,8 @@ namespace application::manager
 
         UpdateWaitingWindows();
 
+        DrawHomeWindow();
+
         for (auto Iter = gWindows.begin(); Iter != gWindows.end(); )
         {
             Iter->get()->Draw();
@@ -630,23 +1277,23 @@ namespace application::manager
             {
                 if (ImGui::MenuItem("Map Editor"))
                 {
-                    application::manager::UIMgr::OpenWindow(std::make_unique<application::rendering::map_editor::UIMapEditor>());
+                    LaunchTool(application::rendering::UIWindowBase::WindowType::EDITOR_MAP);
                 }
                 if (ImGui::MenuItem("AINB Editor"))
                 {
-                    application::manager::UIMgr::OpenWindow(std::make_unique<application::rendering::ainb::UIAINBEditor>());
+                    LaunchTool(application::rendering::UIWindowBase::WindowType::EDITOR_AINB);
                 }
                 if (ImGui::MenuItem("Actor Editor"))
                 {
-                    application::manager::UIMgr::OpenWindow(std::make_unique<application::rendering::actor::UIActorTool>());
+                    LaunchTool(application::rendering::UIWindowBase::WindowType::EDITOR_ACTOR);
                 }
                 if (ImGui::MenuItem("Collision Generator"))
                 {
-                    application::manager::UIMgr::OpenWindow(std::make_unique<application::rendering::collision::UICollisionGenerator>());
+                    LaunchTool(application::rendering::UIWindowBase::WindowType::EDITOR_COLLISION);
                 }
                 if (ImGui::MenuItem("Plugins"))
                 {
-                    application::manager::UIMgr::OpenWindow(std::make_unique<application::rendering::plugin::UIPlugins>());
+                    LaunchTool(application::rendering::UIWindowBase::WindowType::EDITOR_PLUGINS);
                 }
                 ImGui::EndMenu();
             }
@@ -656,13 +1303,7 @@ namespace application::manager
 
             if (ImGui::MenuItem("Preferences"))
             {
-                gSettingsPopUp.Open([](application::rendering::popup::PopUpBuilder& Builder)
-                    {
-                        application::util::FileUtil::ValidatePaths();
-                        application::Editor::InitializeRomFSPathDependant();
-
-                        application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
-                    });
+                OpenPreferencesPopUp();
             }
 
             if (application::manager::ProjectMgr::gProjectsEnabled)
@@ -810,6 +1451,15 @@ namespace application::manager
     {
         if (!Window->SupportsProjectChange())
             gBlockProjectSwitch = true;
+
+        application::rendering::UIWindowBase::WindowType Type = Window->GetWindowType();
+        if (Type != application::rendering::UIWindowBase::WindowType::GENERAL_CONTENT_BROWSER)
+        {
+            gRecentTools.erase(std::remove(gRecentTools.begin(), gRecentTools.end(), Type), gRecentTools.end());
+            gRecentTools.insert(gRecentTools.begin(), Type);
+            if (gRecentTools.size() > 5)
+                gRecentTools.resize(5);
+        }
 
         gWaitingWindows.push_back(std::move(Window));
         return gWaitingWindows.back();

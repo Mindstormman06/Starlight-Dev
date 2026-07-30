@@ -45,6 +45,8 @@ namespace application::rendering::ainb
 		void DeleteImpl() override;
 		WindowType GetWindowType() override;
 
+		void RefreshTheme();
+
 		std::optional<std::function<void(application::file::game::ainb::AINBFile& File)>> mSaveCallback = std::nullopt;
 		std::optional<std::function<void(application::rendering::ainb::UIAINBEditor* Editor) >> mInitCallback = std::nullopt;
 		bool mEnableSaveAs = true;

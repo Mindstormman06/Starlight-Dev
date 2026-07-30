@@ -6,6 +6,7 @@
 #include <vector>
 #include <rendering/UIWindowBase.h>
 #include <rendering/popup/PopUpBuilder.h>
+#include <glm/vec4.hpp>
 #include "imgui.h"
 
 namespace application::manager
@@ -13,13 +14,21 @@ namespace application::manager
 	namespace UIMgr
 	{
 		extern GLFWwindow* gWindow;
-		extern const ImVec4 gClearColor;
+		extern ImVec4 gClearColor;
+		extern glm::vec4 gViewportClearColor;
 		extern std::vector<std::unique_ptr<application::rendering::UIWindowBase>> gWindows;
 		extern std::vector<std::unique_ptr<application::rendering::UIWindowBase>> gWaitingWindows;
 		extern unsigned int gWindowId;
 		extern bool gFirstFrame;
 		extern bool gBlockProjectSwitch;
 		extern bool gASTCSupported;
+		extern int gThemeIndex;
+		extern int gBackgroundThemeIndex;
+		extern ImFont* gLogoFont;
+		extern ImFont* gHeadingFont;
+		extern ImFont* gBigIconFont;
+		extern ImFont* gButtonLabelFont;
+		extern std::vector<application::rendering::UIWindowBase::WindowType> gRecentTools;
 
 		extern ImGuiID gDockMain;
 		extern ImGuiID gDockBottom;
@@ -35,6 +44,17 @@ namespace application::manager
 		void Render();
 		void Cleanup();
 		bool ShouldWindowClose();
+
+		void ApplyTheme(int Index);
+		int GetThemeCount();
+		const char* GetThemeName(int Index);
+		ImVec4 GetAccentColor();
+
+		void ApplyBackgroundTheme(int Index);
+		int GetBackgroundThemeCount();
+		const char* GetBackgroundThemeName(int Index);
+		ImVec4 GetNodeEditorBgColor();
+		ImVec4 GetNodeEditorGridColor();
 
 		std::unique_ptr<application::rendering::UIWindowBase>& OpenWindow(std::unique_ptr<application::rendering::UIWindowBase> Window);
 		void UpdateWaitingWindows();

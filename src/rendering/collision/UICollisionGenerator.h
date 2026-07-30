@@ -106,7 +106,6 @@ namespace application::rendering::collision
 		application::gl::BfresRenderer* mBfresRenderer = nullptr;
 		application::game::ActorPack* mActorPack = nullptr;
 
-		const glm::vec4 mClearColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 		ImVec2 mSceneWindowSize;
 		application::gl::Framebuffer* mFramebuffer = nullptr;
 

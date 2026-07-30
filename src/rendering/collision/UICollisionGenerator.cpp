@@ -491,7 +491,7 @@ namespace application::rendering::collision
         mCamera.mWindowHovered = (ImGui::IsWindowHovered() && !ImGui::IsItemHovered());
 
         glViewport(0, 0, WindowSize.x, WindowSize.y);
-        glClearColor(mClearColor.x * mClearColor.w, mClearColor.y * mClearColor.w, mClearColor.z * mClearColor.w, mClearColor.w);
+        glClearColor(application::manager::UIMgr::gViewportClearColor.x * application::manager::UIMgr::gViewportClearColor.w, application::manager::UIMgr::gViewportClearColor.y * application::manager::UIMgr::gViewportClearColor.w, application::manager::UIMgr::gViewportClearColor.z * application::manager::UIMgr::gViewportClearColor.w, application::manager::UIMgr::gViewportClearColor.w);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
         ImVec2 WindowPos = ImGui::GetWindowPos();
