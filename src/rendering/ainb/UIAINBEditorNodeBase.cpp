@@ -241,6 +241,24 @@ namespace application::rendering::ainb
             mNodeShapeInfo.mHeaderMin = ImVec2(ImGui::GetItemRectMin().x - ed::GetStyle().NodePadding.x + ed::GetStyle().NodeBorderWidth - 1, ImGui::GetItemRectMin().y - ed::GetStyle().NodePadding.y - ImGui::GetTextLineHeightWithSpacing() + ed::GetStyle().NodeBorderWidth - 1);
             mNodeShapeInfo.mHeaderMax = ImVec2(mNodeShapeInfo.mHeaderMin.x + ed::GetNodeSize(mNodeId).x - ed::GetStyle().NodeBorderWidth, ImGui::GetItemRectMin().y + ed::GetStyle().NodePadding.y - 8 + ed::GetStyle().NodeBorderWidth + 1);
         }
+
+        // Header title is plain text, so it doesn't participate in the node editor's own click hit-test - handle it manually.
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsMouseHoveringRect(mNodeShapeInfo.mHeaderMin, mNodeShapeInfo.mHeaderMax))
+        {
+            std::vector<ed::NodeId> SelectedNodes;
+            SelectedNodes.resize(ed::GetSelectedObjectCount());
+            SelectedNodes.resize(ed::GetSelectedNodes(SelectedNodes.data(), (int)SelectedNodes.size()));
+            for (ed::NodeId& Id : SelectedNodes)
+                ed::DeselectNode(Id);
+
+            std::vector<ed::LinkId> SelectedLinks;
+            SelectedLinks.resize(ed::GetSelectedObjectCount());
+            SelectedLinks.resize(ed::GetSelectedLinks(SelectedLinks.data(), (int)SelectedLinks.size()));
+            for (ed::LinkId& Id : SelectedLinks)
+                ed::DeselectLink(Id);
+
+            ed::SelectNode(mNodeId, true);
+        }
 	}
 
     std::string UIAINBEditorNodeBase::GetValueTypeName(application::file::game::ainb::AINBFile::ValueType ValueType)

@@ -92,6 +92,18 @@ namespace application::rendering::ainb
 			uint32_t mFrameDelay = 0;
 		};
 
+		// Full-state snapshot for undo/redo, deep-copying every piece of state the editor can mutate.
+		struct UndoSnapshot
+		{
+			std::vector<application::file::game::ainb::AINBFile::Node> Nodes;
+			std::vector<application::file::game::ainb::AINBFile::Command> Commands;
+			std::vector<application::file::game::ainb::AINBFile::EntryStringEntry> EntryStrings;
+			std::vector<application::file::game::ainb::AINBFile::ChildReplace> Replacements;
+			std::vector<std::vector<application::file::game::ainb::AINBFile::GlobalEntry>> GlobalParameters;
+			// Parallel to Nodes - canvas position isn't part of AINBFile::Node, it lives in the node editor library.
+			std::vector<ImVec2> NodePositions;
+		};
+
 		struct VisualNode
 		{
 			int32_t mX = 0;
@@ -118,12 +130,23 @@ namespace application::rendering::ainb
 		void GraphDeselect(bool Nodes = true, bool Links = true);
 		void DeleteNode(ed::NodeId NodeId);
 		void DeleteNodeLink(ed::LinkId LinkId);
-		// Marks Producer as a precondition of Consumer, and mirrors the link into the Generic
-		// plug array required by Bool/F32/S32/String/Random Selector and Expression nodes.
+		// Copies a node's type/name/parameter values with all connections and identity stripped; Paste appends a fresh instance of it.
+		void CopyNode(ed::NodeId NodeId);
+		void PasteNode(ImVec2 Position);
+		// Marks Producer as a precondition of Consumer and mirrors the link into the Generic plug array the Selector/Expression node types require.
 		void RegisterParameterLink(uint32_t ProducerIndex, application::file::game::ainb::AINBFile::Node* Consumer, application::file::game::ainb::AINBFile::InputEntry& Input);
 		void UnregisterParameterLink(uint32_t ProducerIndex, application::file::game::ainb::AINBFile::Node* Consumer, const std::string& ParameterName);
+		// Fixes up every GlobalParametersIndex reference after deleting blackboard entry DeletedIndex of the given GlobalType.
+		void FixupBlackboardDeletion(uint32_t GlobalType, uint32_t DeletedIndex);
 		void AddEditorNode(application::file::game::ainb::AINBFile::Node* Node, application::manager::AINBNodeMgr::NodeDef* Def = nullptr);
 		void UpdateEditorNodeIndices();
+
+		UndoSnapshot CaptureSnapshot();
+		// Call before any user-initiated mutation of Nodes/Commands/EntryStrings/Replacements/GlobalParameters.
+		void PushUndoSnapshot();
+		void RestoreSnapshot(UndoSnapshot Snapshot);
+		void Undo();
+		void Redo();
 
 		void AutoLayoutGreedyCollisionResolve(std::vector<VisualNode>& AllNodes);
 		int32_t AutoLayoutCalcNodeWidth(VisualNode& Node);
@@ -155,6 +178,13 @@ namespace application::rendering::ainb
 		std::vector<std::unique_ptr<UIAINBEditorNodeBase>> mNodes;
 		std::vector<GraphRenderAction> mGraphRenderActions;
 		std::vector<std::function<void()>> mRenderEndActions;
+
+		std::vector<UndoSnapshot> mUndoStack;
+		std::vector<UndoSnapshot> mRedoStack;
+		static const size_t mMaxUndoHistory = 100;
+
+		application::file::game::ainb::AINBFile::Node mNodeClipboard;
+		bool mHasNodeClipboard = false;
 
 		ed::NodeId mContextNodeId;
 		ed::LinkId mContextLinkId;

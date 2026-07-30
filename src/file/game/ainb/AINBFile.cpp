@@ -1035,8 +1035,7 @@ namespace application::file::game::ainb
 			this->Nodes[i] = Node;
 		}
 
-		// PreconditionNodes are stored as indices into the file's ordered list of
-		// IsPreconditionNode-flagged nodes, not as real node indices - resolve them here.
+		// PreconditionNodes are indices into the file's ordered list of IsPreconditionNode-flagged nodes, not real node indices - resolve them here.
 		{
 			std::vector<uint16_t> QueryIndices;
 			for (Node& N : this->Nodes) {
@@ -1578,9 +1577,7 @@ namespace application::file::game::ainb
 				continue;
 			}
 			
-			// Node.PreconditionNodes holds real node indices in-memory; translate to the
-			// binary's compact query-order indices without mutating the source list, so
-			// repeated ToBinary() calls on the same object stay correct.
+			// Translate real node indices to the binary's compact query-order indices without mutating the source list, so repeated ToBinary() calls stay correct.
 			std::vector<uint16_t> CompactPreconditions;
 			for (uint16_t RealIndex : Node.PreconditionNodes)
 			{

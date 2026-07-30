@@ -519,6 +519,8 @@ namespace application::rendering::ainb
 
 		auto OnEntryPointsAddPress = [this]()
 		{
+			PushUndoSnapshot();
+
 			application::file::game::ainb::AINBFile::Command Cmd;
 			Cmd.IsLeftNodeResident = true;
 			Cmd.IsRightNodeResident = false;
@@ -540,8 +542,9 @@ namespace application::rendering::ainb
 		{
 			for (auto Iter = mAINBFile.Commands.begin(); Iter != mAINBFile.Commands.end(); )
 			{
-				if(ImGuiExt::SelectableTextOffsetWithDeleteButton(CreateID(Iter->Name + "##EntryPointName").c_str(), ImGui::GetStyle().IndentSpacing, [this, &Iter, &Continue]() 
-					{ 
+				if(ImGuiExt::SelectableTextOffsetWithDeleteButton(CreateID(Iter->Name + "##EntryPointName").c_str(), ImGui::GetStyle().IndentSpacing, [this, &Iter, &Continue]()
+					{
+						PushUndoSnapshot();
 						Iter = mAINBFile.Commands.erase(Iter);
 						Continue = true;
 					}, mDetailsEditorContent.mType == DetailsEditorContentType::ENTRYPOINT && std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand == &(*Iter)))
@@ -578,6 +581,8 @@ namespace application::rendering::ainb
 
 		auto OnLocalBlackboardAddPress = [this]()
 		{
+			PushUndoSnapshot();
+
 			uint32_t Count = 0;
 			for (uint32_t Type = 0; Type < application::file::game::ainb::AINBFile::GlobalTypeCount; Type++)
 			{
@@ -610,8 +615,10 @@ namespace application::rendering::ainb
 			{
 				for (auto Iter = mAINBFile.GlobalParameters[Type].begin(); Iter != mAINBFile.GlobalParameters[Type].end(); )
 				{
-					if(ImGuiExt::SelectableTextOffsetWithDeleteButton(CreateID(Iter->Name).c_str(), ImGui::GetStyle().IndentSpacing, [this, &Iter, &Continue, &Type]() 
+					if(ImGuiExt::SelectableTextOffsetWithDeleteButton(CreateID(Iter->Name).c_str(), ImGui::GetStyle().IndentSpacing, [this, &Iter, &Continue, &Type]()
 						{
+							PushUndoSnapshot();
+							FixupBlackboardDeletion(Type, (uint32_t)std::distance(mAINBFile.GlobalParameters[Type].begin(), Iter));
 							Iter = mAINBFile.GlobalParameters[Type].erase(Iter);
 							Continue = true;
 						}, mDetailsEditorContent.mType == DetailsEditorContentType::BLACKBOARD && std::get<DetailsEditorContentBlackBoard>(mDetailsEditorContent.mContent).mVariable == &(*Iter)))
@@ -643,6 +650,91 @@ namespace application::rendering::ainb
 		{
 			mNodes[i]->mNode = &mAINBFile.Nodes[i];
 		}
+	}
+
+	// Positions live in the node editor's own per-NodeId state (not AINBFile::Node), so they're captured/restored in parallel with mNodes by array index, guarded since this can run before DrawGraphWindow makes mNodeEditorContext current.
+	UIAINBEditor::UndoSnapshot UIAINBEditor::CaptureSnapshot()
+	{
+		UndoSnapshot Snapshot;
+		Snapshot.Nodes = mAINBFile.Nodes;
+		Snapshot.Commands = mAINBFile.Commands;
+		Snapshot.EntryStrings = mAINBFile.EntryStrings;
+		Snapshot.Replacements = mAINBFile.Replacements;
+		Snapshot.GlobalParameters = mAINBFile.GlobalParameters;
+
+		ed::EditorContext* PreviousEditor = ed::GetCurrentEditor();
+		ed::SetCurrentEditor(mNodeEditorContext);
+
+		Snapshot.NodePositions.reserve(mNodes.size());
+		for (auto& Node : mNodes)
+			Snapshot.NodePositions.push_back(ed::GetNodePosition(Node->mNodeId));
+
+		ed::SetCurrentEditor(PreviousEditor);
+
+		return Snapshot;
+	}
+
+	void UIAINBEditor::PushUndoSnapshot()
+	{
+		mUndoStack.push_back(CaptureSnapshot());
+		if (mUndoStack.size() > mMaxUndoHistory)
+			mUndoStack.erase(mUndoStack.begin());
+		mRedoStack.clear();
+	}
+
+	// Rebuilds the node wrappers from scratch since UIAINBEditorNodeBase::mNode points into mAINBFile.Nodes' storage, which the assignments below fully reallocate.
+	void UIAINBEditor::RestoreSnapshot(UndoSnapshot Snapshot)
+	{
+		mAINBFile.Nodes = std::move(Snapshot.Nodes);
+		mAINBFile.Commands = std::move(Snapshot.Commands);
+		mAINBFile.EntryStrings = std::move(Snapshot.EntryStrings);
+		mAINBFile.Replacements = std::move(Snapshot.Replacements);
+		mAINBFile.GlobalParameters = std::move(Snapshot.GlobalParameters);
+
+		mNodes.clear();
+		for (application::file::game::ainb::AINBFile::Node& Node : mAINBFile.Nodes)
+		{
+			AddEditorNode(&Node);
+		}
+
+		ed::EditorContext* PreviousEditor = ed::GetCurrentEditor();
+		ed::SetCurrentEditor(mNodeEditorContext);
+
+		for (size_t i = 0; i < mNodes.size() && i < Snapshot.NodePositions.size(); i++)
+			ed::SetNodePosition(mNodes[i]->mNodeId, Snapshot.NodePositions[i]);
+
+		mContextNodeId = 0;
+		mContextLinkId = 0;
+		mDetailsEditorContent.mType = DetailsEditorContentType::NONE;
+		mDetailsEditorContent.mContent = 0;
+		mNewNodeLinkState = NewNodeToLinkState::NONE;
+		mNewNodeStartIndex = -1;
+
+		GraphDeselect();
+
+		ed::SetCurrentEditor(PreviousEditor);
+	}
+
+	void UIAINBEditor::Undo()
+	{
+		if (mUndoStack.empty())
+			return;
+
+		mRedoStack.push_back(CaptureSnapshot());
+		UndoSnapshot Snapshot = std::move(mUndoStack.back());
+		mUndoStack.pop_back();
+		RestoreSnapshot(std::move(Snapshot));
+	}
+
+	void UIAINBEditor::Redo()
+	{
+		if (mRedoStack.empty())
+			return;
+
+		mUndoStack.push_back(CaptureSnapshot());
+		UndoSnapshot Snapshot = std::move(mRedoStack.back());
+		mRedoStack.pop_back();
+		RestoreSnapshot(std::move(Snapshot));
 	}
 
 	void UIAINBEditor::DrawNodeListWindow()
@@ -714,6 +806,45 @@ namespace application::rendering::ainb
 			ed::SetCurrentEditor(nullptr);
 			ImGui::End();
 			return;
+		}
+
+		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive())
+		{
+			if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z))
+			{
+				if (ImGui::GetIO().KeyShift) Redo();
+				else Undo();
+			}
+			else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y))
+			{
+				Redo();
+			}
+			else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C))
+			{
+				std::vector<ed::NodeId> SelectedNodes;
+				SelectedNodes.resize(ed::GetSelectedObjectCount());
+				int Count = ed::GetSelectedNodes(SelectedNodes.data(), static_cast<int>(SelectedNodes.size()));
+				if (Count > 0)
+					CopyNode(SelectedNodes[0]);
+			}
+			else if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V))
+			{
+				PasteNode(ImGui::GetMousePos());
+			}
+			else if (ImGui::IsKeyPressed(ImGuiKey_Delete))
+			{
+				std::vector<ed::LinkId> SelectedLinks;
+				SelectedLinks.resize(ed::GetSelectedObjectCount());
+				SelectedLinks.resize(ed::GetSelectedLinks(SelectedLinks.data(), static_cast<int>(SelectedLinks.size())));
+				for (ed::LinkId& Id : SelectedLinks)
+					DeleteNodeLink(Id);
+
+				std::vector<ed::NodeId> SelectedNodes;
+				SelectedNodes.resize(ed::GetSelectedObjectCount());
+				SelectedNodes.resize(ed::GetSelectedNodes(SelectedNodes.data(), static_cast<int>(SelectedNodes.size())));
+				for (ed::NodeId& Id : SelectedNodes)
+					DeleteNode(Id);
+			}
 		}
 
 		ImVec2 WindowPos = ImGui::GetWindowPos();
@@ -891,6 +1022,8 @@ namespace application::rendering::ainb
 						ShowLabel("+ Create Link", ImColor(32, 45, 32, 180));
 						if (ed::AcceptNewItem(ImColor(128, 255, 128), 4.0f))
 						{
+							PushUndoSnapshot();
+
 							//Parameter link
 							if (EndPin->mType != UIAINBEditorNodeBase::PinType::Flow)
 							{
@@ -1019,6 +1152,14 @@ namespace application::rendering::ainb
 			{
 				DeleteNode(mContextNodeId);
 			}
+			if (ImGui::MenuItem("Copy##CopyNode"))
+			{
+				CopyNode(mContextNodeId);
+			}
+			if (ImGui::MenuItem("Paste##PasteNode", nullptr, false, mHasNodeClipboard))
+			{
+				PasteNode(mOpenPopupPosition);
+			}
 			ImGui::Separator();
 
 			std::unique_ptr<UIAINBEditorNodeBase>* NodePtr = nullptr;
@@ -1062,6 +1203,8 @@ namespace application::rendering::ainb
 
 					if(ImGui::MenuItem("Add new Entry Point here"))
 					{
+						PushUndoSnapshot();
+
 						application::file::game::ainb::AINBFile::Command Cmd;
 						Cmd.LeftNodeIndex = NodePtr->get()->mNode->NodeIndex;
 						std::string Name = NodePtr->get()->mNode->GetName();
@@ -1167,6 +1310,8 @@ namespace application::rendering::ainb
 								return std::tolower(a) == std::tolower(b);
 							}) != Def->mName.end()) && (std::find(Def->mCategories.begin(), Def->mCategories.end(), application::manager::AINBNodeMgr::gFileToNodeCategory[mAINBFile.Header.FileCategory]) != Def->mCategories.end() || mShowAllNodes) && ImGui::Selectable(Def->mName.c_str()))
 						{
+							PushUndoSnapshot();
+
 							application::manager::AINBNodeMgr::AddNode(mAINBFile, Def);
 							AddEditorNode(&mAINBFile.Nodes.back(), Def);
 							UpdateEditorNodeIndices();
@@ -1412,6 +1557,34 @@ namespace application::rendering::ainb
 		}
 	}
 
+	// ValueType and GlobalType enumerate the same six kinds in different orders, so the mapping below converts by conceptual type, not numeric equality.
+	void UIAINBEditor::FixupBlackboardDeletion(uint32_t GlobalType, uint32_t DeletedIndex)
+	{
+		using namespace application::file::game::ainb;
+		static const int GlobalTypeToValueType[6] = { 3, 0, 2, 1, 4, 5 };
+		int ValType = GlobalTypeToValueType[GlobalType];
+
+		for (AINBFile::Node& Node : mAINBFile.Nodes)
+		{
+			for (AINBFile::InputEntry& Entry : Node.InputParameters[ValType])
+			{
+				if (Entry.GlobalParametersIndex == DeletedIndex) Entry.GlobalParametersIndex = 0xFFFF;
+				else if (Entry.GlobalParametersIndex != 0xFFFF && Entry.GlobalParametersIndex > DeletedIndex) Entry.GlobalParametersIndex--;
+
+				for (AINBFile::MultiEntry& Source : Entry.Sources)
+				{
+					if (Source.GlobalParametersIndex == DeletedIndex) Source.GlobalParametersIndex = 0xFFFF;
+					else if (Source.GlobalParametersIndex != 0xFFFF && Source.GlobalParametersIndex > DeletedIndex) Source.GlobalParametersIndex--;
+				}
+			}
+			for (AINBFile::ImmediateParameter& Entry : Node.ImmediateParameters[ValType])
+			{
+				if (Entry.GlobalParametersIndex == DeletedIndex) Entry.GlobalParametersIndex = 0xFFFF;
+				else if (Entry.GlobalParametersIndex != 0xFFFF && Entry.GlobalParametersIndex > DeletedIndex) Entry.GlobalParametersIndex--;
+			}
+		}
+	}
+
 	void UIAINBEditor::UnregisterParameterLink(uint32_t ProducerIndex, application::file::game::ainb::AINBFile::Node* Consumer, const std::string& ParameterName)
 	{
 		using namespace application::file::game::ainb;
@@ -1424,10 +1597,7 @@ namespace application::rendering::ainb
 		}), Generic.end());
 	}
 
-	// IsPreconditionNode is intentionally never stripped here: some nodes (e.g. command/root
-	// entries callable externally as a query) legitimately carry it independent of any local
-	// PreconditionNodes reference, and a stale extra flag is harmless while a wrongly-removed
-	// one is not.
+	// IsPreconditionNode is never stripped here: some nodes carry it independent of any local PreconditionNodes reference, and a stale flag is harmless while a wrongly-removed one is not.
 
 	void UIAINBEditor::DeleteNodeLink(ed::LinkId LinkId)
 	{
@@ -1435,6 +1605,8 @@ namespace application::rendering::ainb
 		{
 			if (Node->mLinks.contains(LinkId.Get()))
 			{
+				PushUndoSnapshot();
+
 				UIAINBEditorNodeBase::Link& Link = Node->mLinks[LinkId.Get()];
 
 				if (Link.mType == UIAINBEditorNodeBase::LinkType::Parameter)
@@ -1477,6 +1649,86 @@ namespace application::rendering::ainb
 		}
 	}
 
+	void UIAINBEditor::CopyNode(ed::NodeId NodeId)
+	{
+		using namespace application::file::game::ainb;
+
+		AINBFile::Node* NodePtr = nullptr;
+		for (auto& Node : mNodes)
+		{
+			if (Node->mNodeId == NodeId.Get())
+			{
+				NodePtr = Node->mNode;
+				break;
+			}
+		}
+		if (NodePtr == nullptr)
+			return;
+
+		mNodeClipboard = *NodePtr;
+
+		mNodeClipboard.GUID = {};
+		mNodeClipboard.Flags.clear();
+		mNodeClipboard.Attachments.clear();
+		mNodeClipboard.AttachmentCount = 0;
+		mNodeClipboard.PreconditionNodes.clear();
+		mNodeClipboard.PreconditionCount = 0;
+		mNodeClipboard.BasePreconditionNode = 0;
+		for (int Type = 0; Type < AINBFile::LinkedNodeTypeCount; Type++)
+			mNodeClipboard.LinkedNodes[Type].clear();
+
+		for (int Type = 0; Type < AINBFile::ValueTypeCount; Type++)
+		{
+			for (AINBFile::InputEntry& Entry : mNodeClipboard.InputParameters[Type])
+			{
+				Entry.NodeIndex = -1;
+				Entry.ParameterIndex = 0;
+				Entry.MultiCount = 0xFFFF;
+				Entry.MultiIndex = 0xFFFF;
+				Entry.Sources.clear();
+				Entry.Flags.clear();
+				Entry.GlobalParametersIndex = 0xFFFF;
+				Entry.EXBIndex = 0xFFFF;
+			}
+			for (AINBFile::ImmediateParameter& Entry : mNodeClipboard.ImmediateParameters[Type])
+			{
+				Entry.Flags.clear();
+				Entry.GlobalParametersIndex = 0xFFFF;
+				Entry.EXBIndex = 0xFFFF;
+			}
+		}
+
+		mHasNodeClipboard = true;
+	}
+
+	void UIAINBEditor::PasteNode(ImVec2 Position)
+	{
+		using namespace application::file::game::ainb;
+
+		if (!mHasNodeClipboard)
+			return;
+
+		PushUndoSnapshot();
+
+		AINBFile::Node NewNode = mNodeClipboard;
+		NewNode.NodeIndex = mAINBFile.Nodes.size();
+		mAINBFile.Nodes.push_back(NewNode);
+
+		application::manager::AINBNodeMgr::NodeDef* Def = nullptr;
+		for (application::manager::AINBNodeMgr::NodeDef& Definition : application::manager::AINBNodeMgr::gNodeDefinitions)
+		{
+			if (Definition.mName == NewNode.Name)
+			{
+				Def = &Definition;
+				break;
+			}
+		}
+
+		AddEditorNode(&mAINBFile.Nodes.back(), Def);
+		UpdateEditorNodeIndices();
+		ed::SetNodePosition(mNodes[mAINBFile.Nodes.size() - 1]->mNodeId, Position);
+	}
+
 	void UIAINBEditor::DeleteNode(ed::NodeId NodeId)
 	{
 		application::file::game::ainb::AINBFile::Node* NodePtr = nullptr;
@@ -1493,6 +1745,8 @@ namespace application::rendering::ainb
 
 		if (NodePtr == nullptr)
 			return;
+
+		PushUndoSnapshot();
 
 		uint32_t NodeIndex = NodePtr->NodeIndex;
 
@@ -1755,6 +2009,18 @@ namespace application::rendering::ainb
 					ImGui::Text("Type");
 					ImGui::TableNextColumn();
 					ImGui::PushItemWidth(ImGui::GetCurrentTable()->Columns[1].WidthMax);
+
+					int OldType = -1, OldIndex = -1;
+					for (int Type = 0; Type < (int)application::file::game::ainb::AINBFile::GlobalTypeCount && OldType == -1; Type++)
+					{
+						auto& Bucket = mAINBFile.GlobalParameters[Type];
+						for (int i = 0; i < (int)Bucket.size(); i++)
+						{
+							if (&Bucket[i] == Entry) { OldType = Type; OldIndex = i; break; }
+						}
+					}
+
+					// ToBinary() re-buckets GlobalParameters by GlobalValueType on save, so this must move Entry to the new bucket now or save would silently shift other entries' indices.
 					if (ImGui::Combo(CreateID("##BlackBoardDataType").c_str(), reinterpret_cast<int*>(&Entry->GlobalValueType), gValueTypeDropdownItems, IM_ARRAYSIZE(gValueTypeDropdownItems))) {
 						if (Entry->GlobalValueType == (int)application::file::game::ainb::AINBFile::GlobalType::String)
 							Entry->GlobalValue = "None";
@@ -1766,6 +2032,22 @@ namespace application::rendering::ainb
 							Entry->GlobalValue = false;
 						else if (Entry->GlobalValueType == (int)application::file::game::ainb::AINBFile::GlobalType::Vec3f)
 							Entry->GlobalValue = glm::vec3(0, 0, 0);
+
+						if (OldType != -1 && OldType != Entry->GlobalValueType)
+						{
+							int NewType = Entry->GlobalValueType;
+							application::file::game::ainb::AINBFile::GlobalEntry Moved = *Entry;
+
+							FixupBlackboardDeletion(OldType, OldIndex);
+							mAINBFile.GlobalParameters[OldType].erase(mAINBFile.GlobalParameters[OldType].begin() + OldIndex);
+
+							mAINBFile.GlobalParameters[NewType].push_back(Moved);
+							Entry = &mAINBFile.GlobalParameters[NewType].back();
+
+							DetailsEditorContentBlackBoard BlackBoard;
+							BlackBoard.mVariable = Entry;
+							mDetailsEditorContent.mContent = BlackBoard;
+						}
 					}
 					ImGui::PopItemWidth();
 					ImGui::TableNextColumn();
