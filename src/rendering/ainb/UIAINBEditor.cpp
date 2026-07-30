@@ -933,9 +933,11 @@ namespace application::rendering::ainb
 									Input.Sources.push_back(application::file::game::ainb::AINBFile::MultiEntry
 									{
 										.NodeIndex = (uint16_t)NodeIndex,
-										.ParameterIndex = (uint16_t)StartPin->mParameterIndex 
+										.ParameterIndex = (uint16_t)StartPin->mParameterIndex
 									});
 								}
+
+								RegisterParameterLink(NodeIndex, EndPin->mNode, Input);
 							}
 							else
 							{ //Flow Link
@@ -1244,9 +1246,11 @@ namespace application::rendering::ainb
 											Input->Sources.push_back(application::file::game::ainb::AINBFile::MultiEntry
 											{
 												.NodeIndex = (uint16_t)LeftNodeIndex,
-												.ParameterIndex = (uint16_t)mNewNodeLinkPin.mParameterIndex 
+												.ParameterIndex = (uint16_t)mNewNodeLinkPin.mParameterIndex
 											});
 										}
+
+										RegisterParameterLink(LeftNodeIndex, mNodes[RightNodeIndex]->mNode, *Input);
 									}
 								}
 							NoParamFound:
@@ -1369,6 +1373,62 @@ namespace application::rendering::ainb
 		ImGui::End();
 	}
 
+	void UIAINBEditor::RegisterParameterLink(uint32_t ProducerIndex, application::file::game::ainb::AINBFile::Node* Consumer, application::file::game::ainb::AINBFile::InputEntry& Input)
+	{
+		using namespace application::file::game::ainb;
+
+		AINBFile::Node& Producer = mAINBFile.Nodes[ProducerIndex];
+		if (std::find(Producer.Flags.begin(), Producer.Flags.end(), AINBFile::FlagsStruct::IsPreconditionNode) == Producer.Flags.end())
+			Producer.Flags.push_back(AINBFile::FlagsStruct::IsPreconditionNode);
+
+		if (std::find(Consumer->PreconditionNodes.begin(), Consumer->PreconditionNodes.end(), (uint16_t)ProducerIndex) == Consumer->PreconditionNodes.end())
+			Consumer->PreconditionNodes.push_back((uint16_t)ProducerIndex);
+
+		switch ((AINBFile::NodeTypes)Consumer->Type)
+		{
+		case AINBFile::NodeTypes::Element_BoolSelector:
+		case AINBFile::NodeTypes::Element_F32Selector:
+		case AINBFile::NodeTypes::Element_S32Selector:
+		case AINBFile::NodeTypes::Element_StringSelector:
+		case AINBFile::NodeTypes::Element_RandomSelector:
+		case AINBFile::NodeTypes::Element_Expression:
+		{
+			auto& Generic = Consumer->LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink];
+			bool AlreadyLinked = std::any_of(Generic.begin(), Generic.end(), [&](AINBFile::LinkedNodeInfo& Info) {
+				return Info.NodeIndex == ProducerIndex && Info.Parameter == Input.Name;
+			});
+			if (!AlreadyLinked)
+			{
+				AINBFile::LinkedNodeInfo Info;
+				Info.NodeIndex = ProducerIndex;
+				Info.Parameter = Input.Name;
+				Info.HasPlugDefault = true;
+				Generic.push_back(Info);
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	}
+
+	void UIAINBEditor::UnregisterParameterLink(uint32_t ProducerIndex, application::file::game::ainb::AINBFile::Node* Consumer, const std::string& ParameterName)
+	{
+		using namespace application::file::game::ainb;
+
+		Consumer->PreconditionNodes.erase(std::remove(Consumer->PreconditionNodes.begin(), Consumer->PreconditionNodes.end(), (uint16_t)ProducerIndex), Consumer->PreconditionNodes.end());
+
+		auto& Generic = Consumer->LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink];
+		Generic.erase(std::remove_if(Generic.begin(), Generic.end(), [&](AINBFile::LinkedNodeInfo& Info) {
+			return Info.NodeIndex == ProducerIndex && Info.Parameter == ParameterName;
+		}), Generic.end());
+	}
+
+	// IsPreconditionNode is intentionally never stripped here: some nodes (e.g. command/root
+	// entries callable externally as a query) legitimately carry it independent of any local
+	// PreconditionNodes reference, and a stale extra flag is harmless while a wrongly-removed
+	// one is not.
+
 	void UIAINBEditor::DeleteNodeLink(ed::LinkId LinkId)
 	{
 		for (auto& Node : mNodes)
@@ -1401,6 +1461,8 @@ namespace application::rendering::ainb
 							Parameter->Sources.clear();
 						}
 					}
+
+					UnregisterParameterLink(Link.mNodeIndex, Node->mNode, Parameter->Name);
 				}
 				else if (Link.mType == UIAINBEditorNodeBase::LinkType::Flow)
 				{
@@ -1501,6 +1563,19 @@ namespace application::rendering::ainb
 					}
 					Iter++;
 				}
+			}
+			for (auto Iter = Node->mNode->PreconditionNodes.begin(); Iter != Node->mNode->PreconditionNodes.end();)
+			{
+				if (*Iter == NodeIndex)
+				{
+					Iter = Node->mNode->PreconditionNodes.erase(Iter);
+					continue;
+				}
+				if (*Iter > NodeIndex)
+				{
+					(*Iter)--;
+				}
+				Iter++;
 			}
 		}
 

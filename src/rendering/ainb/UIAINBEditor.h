@@ -118,6 +118,10 @@ namespace application::rendering::ainb
 		void GraphDeselect(bool Nodes = true, bool Links = true);
 		void DeleteNode(ed::NodeId NodeId);
 		void DeleteNodeLink(ed::LinkId LinkId);
+		// Marks Producer as a precondition of Consumer, and mirrors the link into the Generic
+		// plug array required by Bool/F32/S32/String/Random Selector and Expression nodes.
+		void RegisterParameterLink(uint32_t ProducerIndex, application::file::game::ainb::AINBFile::Node* Consumer, application::file::game::ainb::AINBFile::InputEntry& Input);
+		void UnregisterParameterLink(uint32_t ProducerIndex, application::file::game::ainb::AINBFile::Node* Consumer, const std::string& ParameterName);
 		void AddEditorNode(application::file::game::ainb::AINBFile::Node* Node, application::manager::AINBNodeMgr::NodeDef* Def = nullptr);
 		void UpdateEditorNodeIndices();
 

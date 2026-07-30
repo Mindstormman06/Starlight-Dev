@@ -1035,6 +1035,22 @@ namespace application::file::game::ainb
 			this->Nodes[i] = Node;
 		}
 
+		// PreconditionNodes are stored as indices into the file's ordered list of
+		// IsPreconditionNode-flagged nodes, not as real node indices - resolve them here.
+		{
+			std::vector<uint16_t> QueryIndices;
+			for (Node& N : this->Nodes) {
+				if (std::find(N.Flags.begin(), N.Flags.end(), FlagsStruct::IsPreconditionNode) != N.Flags.end())
+					QueryIndices.push_back(N.NodeIndex);
+			}
+			for (Node& N : this->Nodes) {
+				for (uint16_t& Precondition : N.PreconditionNodes) {
+					if (Precondition < QueryIndices.size())
+						Precondition = QueryIndices[Precondition];
+				}
+			}
+		}
+
 		/* Child replacement */
 		Reader.Seek(Header.ChildReplacementOffset, application::util::BinaryVectorReader::Position::Begin);
 		this->IsReplaced = Reader.ReadUInt8();
@@ -1473,54 +1489,6 @@ namespace application::file::game::ainb
 				AttachmentIndices.push_back(Index);
 			}
 
-			/*
-			for (int i = 0; i < AINBFile::ValueTypeCount; i++)
-			{
-				for (AINBFile::InputEntry Param : Node.InputParameters[i])
-				{
-					if (!Param.Sources.empty())
-					{
-						for (AINBFile::MultiEntry Entry : Param.Sources)
-						{
-							Multis.push_back(Entry);
-
-							bool FoundPreconditionFlagDest = false;
-							for (AINBFile::FlagsStruct Flag : this->Nodes[Entry.NodeIndex].Flags)
-							{
-								if (Flag == AINBFile::FlagsStruct::IsPreconditionNode)
-								{
-									FoundPreconditionFlagDest = true;
-									break;
-								}
-							}
-							if (!FoundPreconditionFlagDest)
-							{
-								this->Nodes[Entry.NodeIndex].Flags.push_back(AINBFile::FlagsStruct::IsPreconditionNode);
-							}
-						}
-					}
-					if (Param.NodeIndex >= 0) //Input param is linked to other node, TODO: Multiple precondition nodes
-					{
-						//PreconditionNodes.insert({ BasePreconditionOffset, Param.NodeIndex });
-						//BasePreconditionOffset++;
-
-						bool FoundPreconditionFlagDest = false;
-						for (AINBFile::FlagsStruct Flag : this->Nodes[Param.NodeIndex].Flags)
-						{
-							if (Flag == AINBFile::FlagsStruct::IsPreconditionNode)
-							{
-								FoundPreconditionFlagDest = true;
-								break;
-							}
-						}
-						if (!FoundPreconditionFlagDest)
-						{
-							this->Nodes[Param.NodeIndex].Flags.push_back(AINBFile::FlagsStruct::IsPreconditionNode);
-						}
-					}
-				}
-			}
-			*/
 
 			for (int i = 0; i < AINBFile::ValueTypeCount; i++)
 			{
@@ -1610,11 +1578,22 @@ namespace application::file::game::ainb
 				continue;
 			}
 			
-			auto [Found, Index] = FindContiguousSubsequence(PreconditionNodes, Node.PreconditionNodes);
+			// Node.PreconditionNodes holds real node indices in-memory; translate to the
+			// binary's compact query-order indices without mutating the source list, so
+			// repeated ToBinary() calls on the same object stay correct.
+			std::vector<uint16_t> CompactPreconditions;
+			for (uint16_t RealIndex : Node.PreconditionNodes)
+			{
+				auto Iter = NodeIndexToPreconditionNodeIndex.find(RealIndex);
+				if (Iter != NodeIndexToPreconditionNodeIndex.end())
+					CompactPreconditions.push_back(Iter->second);
+			}
+
+			auto [Found, Index] = FindContiguousSubsequence(PreconditionNodes, CompactPreconditions);
 			if (!Found)
 			{
 				uint32_t BaseIndex = PreconditionNodes.size();
-				for(uint16_t PreconditionNodeIndex : Node.PreconditionNodes)
+				for(uint16_t PreconditionNodeIndex : CompactPreconditions)
 				{
 					PreconditionNodes.push_back(PreconditionNodeIndex);
 				}
