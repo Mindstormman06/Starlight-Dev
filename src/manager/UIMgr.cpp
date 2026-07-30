@@ -699,6 +699,11 @@ namespace application::manager
             const int maxMajor = 4;
             const int maxMinor = 5;
 
+            // Created hidden so the taskbar button doesn't get created (with whatever default icon)
+            // before we've had a chance to set our own icon below - showing it too early is a race
+            // that made the taskbar icon intermittently fall back to a blank/default one.
+            glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+
             // Try versions from highest to lowest
             for (int major = maxMajor; major >= 3 && gWindow == nullptr; major--)
             {
@@ -759,11 +764,25 @@ namespace application::manager
                     SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(iconLarge));
                 if (iconSmall != nullptr)
                     SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(iconSmall));
+
+                // Also set the icon on the window class itself, not just the per-window WM_SETICON
+                // above - the taskbar button's very first icon snapshot has been observed to come from
+                // the class icon rather than the window icon depending on Windows version/timing, which
+                // is why this was intermittent before. Belt-and-suspenders alongside showing the window
+                // only after both are set (below).
+                if (iconLarge != nullptr)
+                    SetClassLongPtrW(hwnd, GCLP_HICON, reinterpret_cast<LONG_PTR>(iconLarge));
+                if (iconSmall != nullptr)
+                    SetClassLongPtrW(hwnd, GCLP_HICONSM, reinterpret_cast<LONG_PTR>(iconSmall));
             }
 
             if (iconLarge == nullptr && iconSmall == nullptr)
                 application::util::Logger::Warning("UIMgr", "Failed to load embedded window icon IDI_MAIN_ICON");
         }
+
+        glfwShowWindow(gWindow);
+#else
+        glfwShowWindow(gWindow);
 #endif
 
         glfwMakeContextCurrent(gWindow);
