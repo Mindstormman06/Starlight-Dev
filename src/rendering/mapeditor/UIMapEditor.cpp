@@ -1,5 +1,6 @@
 #include "UIMapEditor.h"
 
+#include <cstdio>
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
 #include <manager/UIMgr.h>
@@ -2884,29 +2885,30 @@ namespace application::rendering::map_editor
         ImDrawList* drawList = ImGui::GetWindowDrawList();
 
         ImVec2 windowPos = ImGui::GetCursorScreenPos();
-        ImVec2 windowSize = ImGui::GetWindowSize();
         ImVec2 padding = ImGui::GetStyle().WindowPadding;
+        ImVec2 contentSize = ImGui::GetContentRegionAvail();
 
-        ImVec2 buttonSize(90.0f, 26.0f);
+        ImVec2 buttonSize(18.0f, 18.0f);
 
         ImVec2 buttonPos(
-            windowPos.x + (windowSize.x - buttonSize.x) * 0.5f,
-            windowPos.y + padding.y + 4.0f
+            windowPos.x + contentSize.x - buttonSize.x - padding.x,
+            windowPos.y + contentSize.y - buttonSize.y - padding.y
         );
 
         // Use absolute positioning without affecting layout
         ImGui::SetCursorScreenPos(buttonPos);
         ImGui::SetNextItemAllowOverlap();
 
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.55f, 0.25f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.65f, 0.30f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.75f, 0.35f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.15f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.55f, 0.25f, 0.6f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.20f, 0.55f, 0.25f, 0.8f));
 
-        if (ImGui::Button(ICON_FA_PLAY " Play", buttonSize))
+        if (ImGui::Button(ICON_FA_PLAY "##PlayModeButton", buttonSize))
         {
             EnterPlayMode();
         }
+        ImGui::SetItemTooltip("Play");
 
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
@@ -2980,6 +2982,36 @@ namespace application::rendering::map_editor
 
             ImGui::EndCombo();
         }
+        ImGui::PopItemWidth();
+
+        ImGui::SameLine();
+        static const float CameraSpeedPresets[]{ 0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f, 16.0f };
+        char SpeedComboLabel[48];
+        snprintf(SpeedComboLabel, sizeof(SpeedComboLabel), ICON_FA_GAUGE_HIGH " Speed: %.2f", mCamera.mSpeed);
+        ImGui::PushItemWidth(ImGui::CalcTextSize(ICON_FA_GAUGE_HIGH " Speed: 16.00").x + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x + ImGui::GetStyle().ItemInnerSpacing.x);
+        if (ImGui::BeginCombo("##CameraSpeed", SpeedComboLabel))
+        {
+            for (float Preset : CameraSpeedPresets)
+            {
+                char PresetLabel[16];
+                snprintf(PresetLabel, sizeof(PresetLabel), "%.2fx", Preset);
+                bool IsSelected = (mCamera.mSpeed > Preset ? mCamera.mSpeed - Preset : Preset - mCamera.mSpeed) < 0.001f;
+                if (ImGui::Selectable(PresetLabel, IsSelected))
+                {
+                    mCamera.mSpeed = Preset;
+                }
+
+                if (IsSelected)
+                    ImGui::SetItemDefaultFocus();
+            }
+
+            ImGui::Separator();
+            ImGui::SetNextItemWidth(120.0f);
+            ImGui::DragFloat("##CameraSpeedCustom", &mCamera.mSpeed, 0.05f, 0.01f, 100.0f, "%.2f");
+
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Camera fly speed (used while flying with WASD)");
         ImGui::PopItemWidth();
 
         float w = ImGui::GetCursorPosX();

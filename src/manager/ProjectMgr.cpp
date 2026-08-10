@@ -1,6 +1,7 @@
 #include "ProjectMgr.h"
 
 #include <util/FileUtil.h>
+#include <util/Logger.h>
 #include <iostream>
 #include <filesystem>
 #include <manager/ActorPackMgr.h>
@@ -22,12 +23,43 @@ namespace application::manager
 	bool ProjectMgr::gIsTrialOfTheChosenHeroProject = false;
 	bool ProjectMgr::gProjectsEnabled = true;
 
+	// Pre-rc3 projects stored their romfs content directly under Projects/<Name>/.
+	// FileUtil::GetSaveFilePath/GetRomFSFilePath now always look under Projects/<Name>/romfs/,
+	// so a project left in the old layout silently reads back as empty. Move any such
+	// project's existing contents into a romfs/ subfolder in place (metadata-only rename,
+	// nothing is copied or deleted) so it becomes visible again. No-ops once migrated.
+	static void MigrateLegacyProjectLayout(const std::filesystem::path& ProjectDir)
+	{
+		std::filesystem::path RomFSDir = ProjectDir / "romfs";
+		if (std::filesystem::exists(RomFSDir))
+			return;
+
+		std::vector<std::filesystem::path> Entries;
+		for (const auto& Entry : std::filesystem::directory_iterator(ProjectDir))
+		{
+			Entries.push_back(Entry.path());
+		}
+
+		std::filesystem::create_directory(RomFSDir);
+
+		if (Entries.empty())
+			return;
+
+		for (const std::filesystem::path& EntryPath : Entries)
+		{
+			std::filesystem::rename(EntryPath, RomFSDir / EntryPath.filename());
+		}
+
+		application::util::Logger::Info("ProjectMgr", "Migrated project \"%s\" to the romfs subfolder layout", ProjectDir.filename().string().c_str());
+	}
+
 	void ProjectMgr::Initialize()
 	{
 		for (const auto& Entry : std::filesystem::directory_iterator(application::util::FileUtil::GetWorkingDirFilePath("Projects")))
 		{
 			if (Entry.is_directory())
 			{
+				MigrateLegacyProjectLayout(Entry.path());
 				gProjects.push_back(Entry.path().filename().string());
 			}
 		}

@@ -10,6 +10,7 @@
 #include <util/portable-file-dialogs.h>
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
@@ -881,14 +882,19 @@ namespace application::rendering::ainb
 				std::vector<ed::LinkId> SelectedLinks;
 				SelectedLinks.resize(ed::GetSelectedObjectCount());
 				SelectedLinks.resize(ed::GetSelectedLinks(SelectedLinks.data(), static_cast<int>(SelectedLinks.size())));
-				for (ed::LinkId& Id : SelectedLinks)
-					DeleteNodeLink(Id);
 
 				std::vector<ed::NodeId> SelectedNodes;
 				SelectedNodes.resize(ed::GetSelectedObjectCount());
 				SelectedNodes.resize(ed::GetSelectedNodes(SelectedNodes.data(), static_cast<int>(SelectedNodes.size())));
+
+				if (!SelectedLinks.empty() || !SelectedNodes.empty())
+					PushUndoSnapshot();
+
+				for (ed::LinkId& Id : SelectedLinks)
+					DeleteNodeLink(Id, false);
+
 				for (ed::NodeId& Id : SelectedNodes)
-					DeleteNode(Id);
+					DeleteNode(Id, false);
 			}
 		}
 
@@ -1535,9 +1541,22 @@ namespace application::rendering::ainb
 			Iter++;
 		}
 
-		if(mWantAutoLayout)
+		if (mWantAutoLayout)
 		{
 			AutoLayout();
+			mWantAutoLayout = false;
+		}
+		
+		if (mWantExportLayout)
+		{
+			ExportNodeLayout(mExportLayoutPath);
+			mWantExportLayout = false;
+		}
+
+		if (mWantLoadLayout)
+		{
+			LoadNodeLayout(mLoadLayoutPath);
+			mWantLoadLayout = false;
 		}
 
 		ed::End();
@@ -1644,13 +1663,13 @@ namespace application::rendering::ainb
 
 	// IsPreconditionNode is never stripped here: some nodes carry it independent of any local PreconditionNodes reference, and a stale flag is harmless while a wrongly-removed one is not.
 
-	void UIAINBEditor::DeleteNodeLink(ed::LinkId LinkId)
+	void UIAINBEditor::DeleteNodeLink(ed::LinkId LinkId, bool PushSnapshot)
 	{
 		for (auto& Node : mNodes)
 		{
 			if (Node->mLinks.contains(LinkId.Get()))
 			{
-				PushUndoSnapshot();
+				if (PushSnapshot) PushUndoSnapshot();
 
 				UIAINBEditorNodeBase::Link& Link = Node->mLinks[LinkId.Get()];
 
@@ -1774,24 +1793,28 @@ namespace application::rendering::ainb
 		ed::SetNodePosition(mNodes[mAINBFile.Nodes.size() - 1]->mNodeId, Position);
 	}
 
-	void UIAINBEditor::DeleteNode(ed::NodeId NodeId)
+	void UIAINBEditor::DeleteNode(ed::NodeId NodeId, bool PushSnapshot)
 	{
 		application::file::game::ainb::AINBFile::Node* NodePtr = nullptr;
-		mNodes.erase(std::remove_if(mNodes.begin(), mNodes.end(),
-			[NodeId, &NodePtr](std::unique_ptr<UIAINBEditorNodeBase>& NodeBase) {
-				bool Delete = NodeBase->mNodeId == NodeId.Get();
-				if (Delete)
-				{
-					NodePtr = NodeBase->mNode;
-				}
-				return Delete;
-			}),
-			mNodes.end());
+		for (auto& Node : mNodes)
+		{
+			if (Node->mNodeId == NodeId.Get())
+			{
+				NodePtr = Node->mNode;
+				break;
+			}
+		}
 
 		if (NodePtr == nullptr)
 			return;
 
-		PushUndoSnapshot();
+		if (PushSnapshot) PushUndoSnapshot();
+
+		mNodes.erase(std::remove_if(mNodes.begin(), mNodes.end(),
+			[NodeId](std::unique_ptr<UIAINBEditorNodeBase>& NodeBase) {
+				return NodeBase->mNodeId == NodeId.Get();
+			}),
+			mNodes.end());
 
 		uint32_t NodeIndex = NodePtr->NodeIndex;
 
@@ -2981,7 +3004,41 @@ namespace application::rendering::ainb
 
 			if (mAINBPath.empty())
 				ImGui::BeginDisabled();
-			mWantAutoLayout = ImGui::Button(CreateID("Auto Layout").c_str());
+
+			if (ImGui::BeginMenu(CreateID("Layout").c_str()))
+			{
+				if (ImGui::MenuItem("Auto Layout"))
+					mWantAutoLayout = true;
+
+				if (ImGui::MenuItem("Export Node Layout"))
+				{
+					auto Dialog = pfd::save_file("Export Node Layout", pfd::path::home(),
+						{ "Node Layout (.nlyt)", "*.nlyt" },
+						pfd::opt::none);
+					if (!Dialog.result().empty())
+					{
+						mExportLayoutPath = Dialog.result();
+						if (!mExportLayoutPath.ends_with(".nlyt"))
+							mExportLayoutPath += ".nlyt";
+						mWantExportLayout = true;
+					}
+				}
+
+				if (ImGui::MenuItem("Load Node Layout"))
+				{
+					auto Dialog = pfd::open_file("Load Node Layout", pfd::path::home(),
+						{ "Node Layout (.nlyt)", "*.nlyt" },
+						pfd::opt::none);
+					if (!Dialog.result().empty())
+					{
+						mLoadLayoutPath = Dialog.result()[0];
+						mWantLoadLayout = true;
+					}
+				}
+
+				ImGui::EndMenu();
+			}
+
 			if (mAINBPath.empty())
 				ImGui::EndDisabled();
 
@@ -3083,5 +3140,107 @@ namespace application::rendering::ainb
 		}
 
 		return "AINB Editor###" + std::to_string(mWindowId);
+	}
+
+	struct NodeLayoutEntry
+	{
+		uint32_t NodeIndex;
+		uint32_t NameHash;
+		float X;
+		float Y;
+	};
+
+	void UIAINBEditor::ExportNodeLayout(const std::string& Path)
+	{
+		std::ofstream Out(Path, std::ios::binary);
+		if (!Out.is_open())
+		{
+			application::util::Logger::Error("UIAINBEditor", "Failed to open %s for layout export.", Path.c_str());
+			return;
+		}
+
+		uint32_t Magic = 0x54594C4E; // 'NLYT'
+		uint32_t Version = 1;
+		uint32_t NodeCount = mNodes.size();
+
+		Out.write(reinterpret_cast<const char*>(&Magic), sizeof(uint32_t));
+		Out.write(reinterpret_cast<const char*>(&Version), sizeof(uint32_t));
+		Out.write(reinterpret_cast<const char*>(&NodeCount), sizeof(uint32_t));
+
+		for (size_t i = 0; i < mNodes.size(); i++)
+		{
+			NodeLayoutEntry Entry;
+			Entry.NodeIndex = (uint32_t)i;
+			Entry.NameHash = application::util::Math::StringHashMurMur3_32(mNodes[i]->mNode->GetName());
+			ImVec2 Pos = ed::GetNodePosition(mNodes[i]->mNodeId);
+			Entry.X = Pos.x;
+			Entry.Y = Pos.y;
+			Out.write(reinterpret_cast<const char*>(&Entry), sizeof(NodeLayoutEntry));
+		}
+
+		Out.close();
+		application::util::Logger::Info("UIAINBEditor", "Successfully exported node layout to %s", Path.c_str());
+	}
+
+	void UIAINBEditor::LoadNodeLayout(const std::string& Path)
+	{
+		std::ifstream In(Path, std::ios::binary);
+		if (!In.is_open())
+		{
+			application::util::Logger::Error("UIAINBEditor", "Failed to open %s for layout load.", Path.c_str());
+			return;
+		}
+
+		uint32_t Magic = 0;
+		uint32_t Version = 0;
+		uint32_t NodeCount = 0;
+
+		In.read(reinterpret_cast<char*>(&Magic), sizeof(uint32_t));
+		if (Magic != 0x54594C4E)
+		{
+			application::util::Logger::Error("UIAINBEditor", "Invalid node layout file format (Magic mismatch).");
+			return;
+		}
+
+		In.read(reinterpret_cast<char*>(&Version), sizeof(uint32_t));
+		In.read(reinterpret_cast<char*>(&NodeCount), sizeof(uint32_t));
+
+		std::vector<NodeLayoutEntry> Entries(NodeCount);
+		In.read(reinterpret_cast<char*>(Entries.data()), NodeCount * sizeof(NodeLayoutEntry));
+		In.close();
+
+		PushUndoSnapshot();
+
+		for (const NodeLayoutEntry& Entry : Entries)
+		{
+			bool Matched = false;
+			
+			// Try to match by index first
+			if (Entry.NodeIndex < mNodes.size())
+			{
+				uint32_t CurrentHash = application::util::Math::StringHashMurMur3_32(mNodes[Entry.NodeIndex]->mNode->GetName());
+				if (CurrentHash == Entry.NameHash)
+				{
+					ed::SetNodePosition(mNodes[Entry.NodeIndex]->mNodeId, ImVec2(Entry.X, Entry.Y));
+					Matched = true;
+				}
+			}
+
+			// If index mismatch, search by NameHash
+			if (!Matched)
+			{
+				for (size_t i = 0; i < mNodes.size(); i++)
+				{
+					uint32_t CurrentHash = application::util::Math::StringHashMurMur3_32(mNodes[i]->mNode->GetName());
+					if (CurrentHash == Entry.NameHash)
+					{
+						ed::SetNodePosition(mNodes[i]->mNodeId, ImVec2(Entry.X, Entry.Y));
+						break;
+					}
+				}
+			}
+		}
+
+		application::util::Logger::Info("UIAINBEditor", "Successfully loaded node layout from %s", Path.c_str());
 	}
 }

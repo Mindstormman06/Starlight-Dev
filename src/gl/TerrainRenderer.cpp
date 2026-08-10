@@ -915,9 +915,9 @@ namespace application::gl
                         const glm::vec2 AreaStartPos = AreaPos - glm::vec2(0.5f * TileWidth, 0.5f * TileWidth);
                         const glm::vec2 AreaEndPos = AreaPos + glm::vec2(0.5f * TileWidth, 0.5f * TileWidth);
 
-                        //Found area that covers tile
-                        if (TilePos.x > AreaStartPos.x && TilePos.x < AreaEndPos.x &&
-                            TilePos.y > AreaStartPos.y && TilePos.y < AreaEndPos.y)
+                        //Found area that covers tile (inclusive: tile centers can land exactly on an area's edge)
+                        if (TilePos.x >= AreaStartPos.x && TilePos.x <= AreaEndPos.x &&
+                            TilePos.y >= AreaStartPos.y && TilePos.y <= AreaEndPos.y)
                         {
                             // Get the archive pack for this tile
                             application::manager::TerrainMgr::TerrainScene::ArchivePack* ArchivePack =
@@ -1236,9 +1236,9 @@ namespace application::gl
 						const glm::vec2 AreaStartPos = AreaPos - glm::vec2(0.5f * TileWidth, 0.5f * TileWidth);
 						const glm::vec2 AreaEndPos = AreaPos + glm::vec2(0.5f * TileWidth, 0.5f * TileWidth);
 
-                        //Found area that covers tile
-                        if (TilePos.x > AreaStartPos.x && TilePos.x < AreaEndPos.x &&
-                            TilePos.y > AreaStartPos.y && TilePos.y < AreaEndPos.y)
+                        //Found area that covers tile (inclusive: tile centers can land exactly on an area's edge)
+                        if (TilePos.x >= AreaStartPos.x && TilePos.x <= AreaEndPos.x &&
+                            TilePos.y >= AreaStartPos.y && TilePos.y <= AreaEndPos.y)
                         {
                             // Get the archive pack for this tile
                             application::manager::TerrainMgr::TerrainScene::ArchivePack* ArchivePack =

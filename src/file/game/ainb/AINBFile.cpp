@@ -158,7 +158,7 @@ namespace application::file::game::ainb
 			Entry.Value = Reader->ReadUInt32();
 		}
 		if (Type == 1) { //bool
-			Entry.Value = Reader->ReadUInt32();
+			Entry.Value = (bool)Reader->ReadUInt32();
 		}
 		if (Type == 2) { //float
 			Entry.Value = Reader->ReadFloat();

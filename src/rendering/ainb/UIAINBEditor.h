@@ -130,8 +130,8 @@ namespace application::rendering::ainb
 		};
 
 		void GraphDeselect(bool Nodes = true, bool Links = true);
-		void DeleteNode(ed::NodeId NodeId);
-		void DeleteNodeLink(ed::LinkId LinkId);
+		void DeleteNode(ed::NodeId NodeId, bool PushSnapshot = true);
+		void DeleteNodeLink(ed::LinkId LinkId, bool PushSnapshot = true);
 		// Copies a node's type/name/parameter values with all connections and identity stripped; Paste appends a fresh instance of it.
 		void CopyNode(ed::NodeId NodeId);
 		void PasteNode(ImVec2 Position);
@@ -160,6 +160,8 @@ namespace application::rendering::ainb
 		void AutoLayout();
 		void AutoLayoutCollectCommandNodes(VisualNode* Root, std::set<VisualNode*>& OutNodes, std::set<VisualNode*>& Visited, std::vector<VisualNode>& AllNodes);
 		void AutoLayoutResolveGroupCollisions(std::vector<CommandGroup>& Groups);
+		void ExportNodeLayout(const std::string& Path);
+		void LoadNodeLayout(const std::string& Path);
 
 		std::string GetWindowTitle();
 
@@ -174,6 +176,10 @@ namespace application::rendering::ainb
 		bool mDetailsOpen = true;
 
 		bool mWantAutoLayout = false;
+		bool mWantExportLayout = false;
+		bool mWantLoadLayout = false;
+		std::string mLoadLayoutPath = "";
+		std::string mExportLayoutPath = "";
 
 		ed::EditorContext* mNodeEditorContext = nullptr;
 		int mNodeEditorUniqueId = 1;

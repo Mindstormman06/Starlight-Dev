@@ -599,19 +599,22 @@ namespace application::file::game::terrain
 		glm::vec2 t2C4 = glm::vec2(t2MaxX, t2MaxY);
 
 
+		// Inclusive bounds: adjacent areas on the terrain quadtree routinely share an edge
+		// exactly (not just by floating point coincidence), so a strict < / > here silently
+		// drops edge-touching areas from every section's tile list.
 		if (
 			(
-				(t1C1.x > t2MinX && t1C1.x < t2MaxX && t1C1.y > t2MinY && t1C1.y < t2MaxY)
-				|| (t1C2.x > t2MinX && t1C2.x < t2MaxX && t1C2.y > t2MinY && t1C2.y < t2MaxY)
-				|| (t1C3.x > t2MinX && t1C3.x < t2MaxX && t1C3.y > t2MinY && t1C3.y < t2MaxY)
-				|| (t1C4.x > t2MinX && t1C4.x < t2MaxX && t1C4.y > t2MinY && t1C4.y < t2MaxY)
+				(t1C1.x >= t2MinX && t1C1.x <= t2MaxX && t1C1.y >= t2MinY && t1C1.y <= t2MaxY)
+				|| (t1C2.x >= t2MinX && t1C2.x <= t2MaxX && t1C2.y >= t2MinY && t1C2.y <= t2MaxY)
+				|| (t1C3.x >= t2MinX && t1C3.x <= t2MaxX && t1C3.y >= t2MinY && t1C3.y <= t2MaxY)
+				|| (t1C4.x >= t2MinX && t1C4.x <= t2MaxX && t1C4.y >= t2MinY && t1C4.y <= t2MaxY)
 				)
 			||
 			(
-				(t2C1.x > t1MinX && t2C1.x < t1MaxX && t2C1.y > t1MinY && t2C1.y < t1MaxY)
-				|| (t2C2.x > t1MinX && t2C2.x < t1MaxX && t2C2.y > t1MinY && t2C2.y < t1MaxY)
-				|| (t2C3.x > t1MinX && t2C3.x < t1MaxX && t2C3.y > t1MinY && t2C3.y < t1MaxY)
-				|| (t2C4.x > t1MinX && t2C4.x < t1MaxX && t2C4.y > t1MinY && t2C4.y < t1MaxY)
+				(t2C1.x >= t1MinX && t2C1.x <= t1MaxX && t2C1.y >= t1MinY && t2C1.y <= t1MaxY)
+				|| (t2C2.x >= t1MinX && t2C2.x <= t1MaxX && t2C2.y >= t1MinY && t2C2.y <= t1MaxY)
+				|| (t2C3.x >= t1MinX && t2C3.x <= t1MaxX && t2C3.y >= t1MinY && t2C3.y <= t1MaxY)
+				|| (t2C4.x >= t1MinX && t2C4.x <= t1MaxX && t2C4.y >= t1MinY && t2C4.y <= t1MaxY)
 				))
 		{
 			return true;
