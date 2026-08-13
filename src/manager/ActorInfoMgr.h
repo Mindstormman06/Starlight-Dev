@@ -170,7 +170,13 @@ namespace application::manager
         void ConvertBymlNodeToActorInfoEntry(application::file::game::byml::BymlFile::Node& Node, ActorInfoEntry& Entry);
         void ConvertActorInfoEntryToBymlNode(application::file::game::byml::BymlFile::Node& Node, ActorInfoEntry& Entry);
 
+        // Get-or-create: inserts a blank entry for Gyml if it isn't already present. Only use this
+        // for callers that intend to read/write a (possibly new, e.g. custom-actor) entry, such as
+        // the Actor Tool - it never returns nullptr.
         ActorInfoEntry* GetActorInfo(const std::string& Gyml);
+        // Read-only lookup: returns nullptr if Gyml has no entry, without inserting one. Use this
+        // whenever the caller actually needs to know "was this actor found".
+        ActorInfoEntry* FindActorInfo(const std::string& Gyml);
 
         void Initialize();
         void Save();

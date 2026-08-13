@@ -155,7 +155,7 @@ namespace application::play
             float activationRadius = mPhysicsActivationRadius;
             if (Entity->mEntity != nullptr)
             {
-                if (application::manager::ActorInfoMgr::ActorInfoEntry* actorInfo = application::manager::ActorInfoMgr::GetActorInfo(Entity->mEntity->mGyml);
+                if (application::manager::ActorInfoMgr::ActorInfoEntry* actorInfo = application::manager::ActorInfoMgr::FindActorInfo(Entity->mEntity->mGyml);
                     actorInfo != nullptr && actorInfo->mLoadRadius.has_value() && actorInfo->mLoadRadius.value() > 0.0f)
                 {
                     activationRadius = actorInfo->mLoadRadius.value();

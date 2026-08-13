@@ -18,6 +18,18 @@ namespace application::file::game::ainb
 		return ss.str();
 	}
 
+	uint8_t AINBFile::GlobalTypeToValueType(uint8_t GlobalType)
+	{
+		static const uint8_t Table[6] = { 3, 0, 2, 1, 4, 5 };
+		return GlobalType < 6 ? Table[GlobalType] : 0;
+	}
+
+	uint8_t AINBFile::ValueTypeToGlobalType(uint8_t ValueType)
+	{
+		static const uint8_t Table[6] = { 1, 3, 2, 0, 4, 5 };
+		return ValueType < 6 ? Table[ValueType] : 0;
+	}
+
 	std::string AINBFile::NodeTypeToString(AINBFile::NodeTypes Type)
 	{
 		switch (Type)

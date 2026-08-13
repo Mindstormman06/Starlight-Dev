@@ -5,11 +5,14 @@
 #include <file/game/ainb/AINBFile.h>
 #include <string>
 #include <unordered_map>
+#include <optional>
 
 namespace ed = ax::NodeEditor;
 
 namespace application::rendering::ainb
 {
+	class UIAINBEditor;
+
 	class UIAINBEditorNodeBase
 	{
 	public:
@@ -71,15 +74,15 @@ namespace application::rendering::ainb
 		void Reset();
 
 		void DrawNodeHeader(const std::string& Title, application::file::game::ainb::AINBFile::Node* Node = nullptr);
-		std::string GetValueTypeName(application::file::game::ainb::AINBFile::ValueType ValueType);
-		std::string GetValueTypeName(uint8_t ValueType);
-        ImColor GetValueTypeColor(application::file::game::ainb::AINBFile::ValueType ValueType);
+		static std::string GetValueTypeName(application::file::game::ainb::AINBFile::ValueType ValueType);
+		static std::string GetValueTypeName(uint8_t ValueType);
+        static ImColor GetValueTypeColor(application::file::game::ainb::AINBFile::ValueType ValueType);
         ImColor GetPinTypeColor(PinType Type);
-        ImColor GetValueTypeColor(uint8_t ValueType);
+        static ImColor GetValueTypeColor(uint8_t ValueType);
         UIAINBEditorNodeBase::PinType ValueTypeToPinType(application::file::game::ainb::AINBFile::ValueType Type);
         UIAINBEditorNodeBase::PinType ValueTypeToPinType(uint8_t Type);
 		void DrawPinIcon(bool Connected, uint32_t Alpha, PinType Type);
-		ImRect DrawPin(uint32_t Id, bool Connected, uint32_t Alpha, PinType Type, ed::PinKind Kind, std::string Name, bool IsHeaderPin = false);
+		ImRect DrawPin(uint32_t Id, bool Connected, uint32_t Alpha, PinType Type, ed::PinKind Kind, const std::string& Name, bool IsHeaderPin = false);
 		void DrawParameterValue(application::file::game::ainb::AINBFile::ValueType Type, const std::string& Name, uint32_t Id, void* Dest);
 		void Draw();
 		void DrawInternalParameterSeparator();
@@ -140,7 +143,47 @@ namespace application::rendering::ainb
 		std::unordered_map<uint32_t, Pin> mPins;
 		std::unordered_map<uint32_t, Link> mLinks;
 		application::file::game::ainb::AINBFile::Node* mNode;
+		// Set once by UIAINBEditor::AddEditorNode right after construction - lets draw code reach
+		// the owning editor's AINBFile (e.g. to resolve a Blackboard entry's name) and undo stack.
+		UIAINBEditor* mOwner = nullptr;
 	private:
 		ImVec2 mInternalParameterStartPos;
+
+		// Result of a Blackboard entry dropped onto a parameter widget - mirrors
+		// UIAINBEditor::BlackboardDragPayload's shape without needing that type's full definition here.
+		struct BlackboardLinkTarget
+		{
+			uint32_t GlobalType;
+			uint32_t Index;
+		};
+
+		struct BlackboardChipAction
+		{
+			bool Unlink = false;
+			std::optional<BlackboardLinkTarget> Relink; // set if a different Blackboard entry was dropped on the chip
+		};
+
+		// Draws a read-only "linked to Blackboard entry" chip (icon + Name, colored by Type), an
+		// unlink button, and accepts drops of a different matching-type entry to swap the link.
+		BlackboardChipAction DrawBlackboardLinkChip(uint8_t Type, const std::string& Name, uint32_t Id);
+		// Makes the last-submitted ImGui item a drop target for a Blackboard palette entry. Returns
+		// the dropped entry's (GlobalType, Index) only if its value type matches Type; a
+		// mismatched-type drop is silently ignored.
+		std::optional<BlackboardLinkTarget> AcceptBlackboardDrop(uint8_t Type);
+
+		// A parameter's "Name (Type/Class)" pin label and its measured width never change after
+		// the node is constructed (nothing in the editor renames/retypes an existing InputEntry/
+		// OutputEntry), so rebuilding the string and re-measuring it every visible frame is pure
+		// waste - built lazily on first draw instead (needs a live ImGui font, so can't happen in
+		// the constructor) and kept for the node's lifetime.
+		struct ParamLabelCache
+		{
+			bool Built = false;
+			std::string Label;
+			float Width = 0.0f;
+		};
+		std::vector<std::vector<ParamLabelCache>> mInputLabelCache; // [Type][Index], sized in the constructor
+		std::vector<std::vector<ParamLabelCache>> mOutputLabelCache; // [Type][Index], sized in the constructor
+		const ParamLabelCache& GetCachedParamLabel(std::vector<std::vector<ParamLabelCache>>& Cache, uint8_t Type, uint8_t Index, const std::string& Name, const std::string& Class);
 	};
 }

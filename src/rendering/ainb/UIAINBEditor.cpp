@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <chrono>
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui_stdlib.h"
@@ -343,6 +344,7 @@ namespace application::rendering::ainb
 		{
 			AddEditorNode(&Node);
 		}
+		mLinkedOutputParamsDirty = true;
 	}
 
 	void UIAINBEditor::LoadAINB(const std::vector<unsigned char>& AINBBytes)
@@ -368,6 +370,7 @@ namespace application::rendering::ainb
 		{
 			AddEditorNode(&Node);
 		}
+		mLinkedOutputParamsDirty = true;
 	}
 
 	void UIAINBEditor::GraphDeselect(bool Nodes, bool Links)
@@ -453,6 +456,8 @@ namespace application::rendering::ainb
 			mNodeEditorUniqueId += 1000;
 			break;
 		}
+
+		mNodes.back()->mOwner = this;
 	}
 
 	void UIAINBEditor::InitializeImpl()
@@ -627,13 +632,26 @@ namespace application::rendering::ainb
 			{
 				for (auto Iter = mAINBFile.GlobalParameters[Type].begin(); Iter != mAINBFile.GlobalParameters[Type].end(); )
 				{
-					if(ImGuiExt::SelectableTextOffsetWithDeleteButton(CreateID(Iter->Name).c_str(), ImGui::GetStyle().IndentSpacing, [this, &Iter, &Continue, &Type]()
+					// Real game blackboards can legitimately define multiple entries with the same
+					// Name (in different type buckets, or even the same one) - an ID built from Name
+					// alone collides for those, so disambiguate with the entry's own (Type, Index)
+					// after the "##" (hidden from the visible label, still part of the ID hash).
+					std::string EntryId = Iter->Name + "##BB" + std::to_string(Type) + "_" + std::to_string(std::distance(mAINBFile.GlobalParameters[Type].begin(), Iter));
+					if(ImGuiExt::SelectableTextOffsetWithDeleteButton(CreateID(EntryId).c_str(), ImGui::GetStyle().IndentSpacing, [this, &Iter, &Continue, &Type]()
 						{
 							PushUndoSnapshot();
 							FixupBlackboardDeletion(Type, (uint32_t)std::distance(mAINBFile.GlobalParameters[Type].begin(), Iter));
 							Iter = mAINBFile.GlobalParameters[Type].erase(Iter);
 							Continue = true;
-						}, mDetailsEditorContent.mType == DetailsEditorContentType::BLACKBOARD && std::get<DetailsEditorContentBlackBoard>(mDetailsEditorContent.mContent).mVariable == &(*Iter)))
+						}, mDetailsEditorContent.mType == DetailsEditorContentType::BLACKBOARD && std::get<DetailsEditorContentBlackBoard>(mDetailsEditorContent.mContent).mVariable == &(*Iter), 0, ImVec2(0, 0),
+						[this, Type, Iter]()
+						{
+							UIAINBEditor::BlackboardDragPayload Payload{ Type, (uint32_t)std::distance(mAINBFile.GlobalParameters[Type].begin(), Iter) };
+							ImGui::SetDragDropPayload(UIAINBEditor::kBlackboardDragDropId, &Payload, sizeof(Payload));
+							ImColor Color = UIAINBEditorNodeBase::GetValueTypeColor(application::file::game::ainb::AINBFile::GlobalTypeToValueType((uint8_t)Type));
+							ImGui::TextColored(Color.Value, "%s", Iter->Name.c_str());
+							ImGui::TextDisabled("Drop onto a matching input");
+						}))
 					{
 						DetailsEditorContentBlackBoard BlackBoard;
 						BlackBoard.mVariable = &(*Iter);
@@ -692,6 +710,10 @@ namespace application::rendering::ainb
 		if (mUndoStack.size() > mMaxUndoHistory)
 			mUndoStack.erase(mUndoStack.begin());
 		mRedoStack.clear();
+
+		// Called before every user-initiated mutation of Nodes/GlobalParameters, so this is a
+		// reliable single choke point for invalidating the cached link topology too.
+		mLinkedOutputParamsDirty = true;
 	}
 
 	// Rebuilds the node wrappers from scratch since UIAINBEditorNodeBase::mNode points into mAINBFile.Nodes' storage, which the assignments below fully reallocate.
@@ -708,6 +730,7 @@ namespace application::rendering::ainb
 		{
 			AddEditorNode(&Node);
 		}
+		mLinkedOutputParamsDirty = true;
 
 		ed::EditorContext* PreviousEditor = ed::GetCurrentEditor();
 		ed::SetCurrentEditor(mNodeEditorContext);
@@ -834,6 +857,44 @@ namespace application::rendering::ainb
 		return false;
 	}
 
+	void UIAINBEditor::RefreshLinkedOutputParams()
+	{
+		for (std::unique_ptr<UIAINBEditorNodeBase>& Node : mNodes)
+		{
+			for (uint8_t i = 0; i < application::file::game::ainb::AINBFile::ValueTypeCount; i++)
+				Node->mLinkedOutputParams[i].clear();
+		}
+
+		for (int i = 0; i < mAINBFile.Nodes.size(); i++)
+		{
+			for (int j = 0; j < application::file::game::ainb::AINBFile::ValueTypeCount; j++)
+			{
+				for (application::file::game::ainb::AINBFile::InputEntry& Entry : mAINBFile.Nodes[i].InputParameters[j])
+				{
+					if (Entry.NodeIndex >= 0)
+					{
+						uint8_t ResolvedCategory;
+						if (ResolveOutputCategory(mAINBFile, Entry.NodeIndex, (uint8_t)j, Entry.ParameterIndex, ResolvedCategory))
+						{
+							mNodes[Entry.NodeIndex]->mLinkedOutputParams[ResolvedCategory].push_back(Entry.ParameterIndex);
+						}
+					}
+					else
+					{
+						for (application::file::game::ainb::AINBFile::MultiEntry& Multi : Entry.Sources)
+						{
+							uint8_t ResolvedCategory;
+							if (ResolveOutputCategory(mAINBFile, Multi.NodeIndex, (uint8_t)j, Multi.ParameterIndex, ResolvedCategory))
+							{
+								mNodes[Multi.NodeIndex]->mLinkedOutputParams[ResolvedCategory].push_back(Multi.ParameterIndex);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	void UIAINBEditor::DrawGraphWindow()
 	{
 		if(!mGraphOpen)
@@ -853,6 +914,8 @@ namespace application::rendering::ainb
 			ImGui::End();
 			return;
 		}
+
+		const auto FrameStart = std::chrono::high_resolution_clock::now();
 
 		if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive())
 		{
@@ -899,7 +962,8 @@ namespace application::rendering::ainb
 		}
 
 		ImVec2 WindowPos = ImGui::GetWindowPos();
-		
+
+		const auto ResetStart = std::chrono::high_resolution_clock::now();
 		for (std::unique_ptr<UIAINBEditorNodeBase>& Node : mNodes)
 		{
 			Node->Reset();
@@ -910,48 +974,48 @@ namespace application::rendering::ainb
 		{
 			if(Cmd.LeftNodeIndex < 0 || mNodes.size() <= Cmd.LeftNodeIndex)
 				continue;
-			
+
 			mNodes[Cmd.LeftNodeIndex]->mIsEntryPoint = true;
 		}
+		const auto ResetEnd = std::chrono::high_resolution_clock::now();
 
-		for (int i = 0; i < mAINBFile.Nodes.size(); i++)
+		// Pure function of graph topology (which input links to which output) - recomputing it
+		// unconditionally here meant every frame paid an O(total params in the whole graph) cost
+		// just to redo the exact same result, whether or not anything changed since last frame.
+		if (mLinkedOutputParamsDirty)
 		{
-			for (int j = 0; j < application::file::game::ainb::AINBFile::ValueTypeCount; j++) 
-			{
-				for (application::file::game::ainb::AINBFile::InputEntry& Entry : mAINBFile.Nodes[i].InputParameters[j]) 
-				{
-					if (Entry.NodeIndex >= 0)
-					{
-						uint8_t ResolvedCategory;
-						if (ResolveOutputCategory(mAINBFile, Entry.NodeIndex, (uint8_t)j, Entry.ParameterIndex, ResolvedCategory))
-						{
-							mNodes[Entry.NodeIndex]->mLinkedOutputParams[ResolvedCategory].push_back(Entry.ParameterIndex);
-						}
-					}
-					else
-					{
-						for (application::file::game::ainb::AINBFile::MultiEntry& Multi : Entry.Sources)
-						{
-							uint8_t ResolvedCategory;
-							if (ResolveOutputCategory(mAINBFile, Multi.NodeIndex, (uint8_t)j, Multi.ParameterIndex, ResolvedCategory))
-							{
-								mNodes[Multi.NodeIndex]->mLinkedOutputParams[ResolvedCategory].push_back(Multi.ParameterIndex);
-							}
-						}
-					}
-				}
-			}
+			RefreshLinkedOutputParams();
+			mLinkedOutputParamsDirty = false;
 		}
+		const auto LinkRefreshEnd = std::chrono::high_resolution_clock::now();
 
 		for (std::unique_ptr<UIAINBEditorNodeBase>& Node : mNodes)
 		{
 			Node->Draw();
 			Node->mFlowLinked = false;
 		}
+		const auto NodeDrawEnd = std::chrono::high_resolution_clock::now();
 
 		for (std::unique_ptr<UIAINBEditorNodeBase>& Node : mNodes)
 		{
 			Node->RenderLinks(mNodes);
+		}
+		const auto RenderLinksEnd = std::chrono::high_resolution_clock::now();
+
+		if (gShowPerformanceStats)
+		{
+			mPerfStats.mReset.Update(std::chrono::duration<float, std::milli>(ResetEnd - ResetStart).count());
+			mPerfStats.mLinkRefresh.Update(std::chrono::duration<float, std::milli>(LinkRefreshEnd - ResetEnd).count());
+			mPerfStats.mNodeDraw.Update(std::chrono::duration<float, std::milli>(NodeDrawEnd - LinkRefreshEnd).count());
+			mPerfStats.mRenderLinks.Update(std::chrono::duration<float, std::milli>(RenderLinksEnd - NodeDrawEnd).count());
+
+			mPerfStats.mTotalNodeCount = (int)mNodes.size();
+			mPerfStats.mVisibleNodeCount = 0;
+			for (std::unique_ptr<UIAINBEditorNodeBase>& Node : mNodes)
+			{
+				if (!Node->mIsCulled)
+					mPerfStats.mVisibleNodeCount++;
+			}
 		}
 
 		if (ed::BeginCreate(ImColor(255, 255, 255), 2.0f))
@@ -1559,7 +1623,25 @@ namespace application::rendering::ainb
 			mWantLoadLayout = false;
 		}
 
+		const auto InteractionEnd = std::chrono::high_resolution_clock::now();
+
 		ed::End();
+
+		const auto EdEndDone = std::chrono::high_resolution_clock::now();
+
+		if (gShowPerformanceStats)
+		{
+			mPerfStats.mInteraction.Update(std::chrono::duration<float, std::milli>(InteractionEnd - RenderLinksEnd).count());
+			// The vendored node-editor library's own per-frame cost (node sort + channel splitter
+			// rebuild), scaling with total node count regardless of visibility - see EndEditor() in
+			// libs/imgui-node-editor/imgui_node_editor.cpp. Not Starlight's code, can't be optimized
+			// here without forking the library.
+			mPerfStats.mEdEnd.Update(std::chrono::duration<float, std::milli>(EdEndDone - InteractionEnd).count());
+			mPerfStats.mTotal.Update(std::chrono::duration<float, std::milli>(EdEndDone - FrameStart).count());
+			mPerfStats.mFullFrame.Update(ImGui::GetIO().DeltaTime * 1000.0f);
+			mPerfStats.mZoom = ed::GetCurrentZoom(); // must read this while mNodeEditorContext is still current
+			mPerfStats.TickPeakWindow(ImGui::GetIO().DeltaTime);
+		}
 
 		uint32_t HoveredLinkId = ed::GetHoveredLink().Get();
 		if (HoveredLinkId != 0)
@@ -1579,6 +1661,70 @@ namespace application::rendering::ainb
 			ImGui::EndDisabled();
 
 		ed::SetCurrentEditor(nullptr);
+		ImGui::End();
+
+		if (gShowPerformanceStats)
+			DrawPerformanceStatsOverlay();
+	}
+
+	void UIAINBEditor::DrawPerformanceStatsOverlay()
+	{
+		ImGuiViewport* Viewport = ImGui::GetMainViewport();
+		ImVec2 Pos = ImVec2(Viewport->WorkPos.x + Viewport->WorkSize.x - 12.0f, Viewport->WorkPos.y + 12.0f);
+		ImGui::SetNextWindowPos(Pos, ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+		ImGui::SetNextWindowBgAlpha(0.85f);
+
+		ImGuiWindowFlags Flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
+			| ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking;
+
+		if (ImGui::Begin(CreateID("##AINBPerformanceStats").c_str(), nullptr, Flags))
+		{
+			ImGui::Text("AINB Performance Stats");
+			ImGui::Separator();
+			ImGui::Text("Nodes: %d visible / %d total", mPerfStats.mVisibleNodeCount, mPerfStats.mTotalNodeCount);
+			ImGui::Text("Zoom: %.2f", mPerfStats.mZoom);
+
+			if (ImGui::BeginTable(CreateID("##AINBPerfTable").c_str(), 3, ImGuiTableFlags_SizingFixedFit))
+			{
+				ImGui::TableSetupColumn("Section");
+				ImGui::TableSetupColumn("Avg (ms)");
+				ImGui::TableSetupColumn("Peak/1s (ms)");
+				ImGui::TableHeadersRow();
+
+				auto Row = [](const char* Label, const TimedValue& Value)
+				{
+					ImGui::TableNextRow();
+					ImGui::TableNextColumn();
+					ImGui::TextUnformatted(Label);
+					ImGui::TableNextColumn();
+					ImGui::Text("%.3f", Value.Smoothed);
+					ImGui::TableNextColumn();
+					ImGui::Text("%.3f", Value.Peak);
+				};
+
+				Row("Node Reset", mPerfStats.mReset);
+				Row("Link Refresh", mPerfStats.mLinkRefresh);
+				Row("Node Draw", mPerfStats.mNodeDraw);
+				Row("Render Links", mPerfStats.mRenderLinks);
+				Row("Interaction/Popups", mPerfStats.mInteraction);
+				Row("ed::End (library)", mPerfStats.mEdEnd);
+				Row("Total (AINB draw only)", mPerfStats.mTotal);
+
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextColored(ImColor(255, 220, 100).Value, "Full Frame (real)");
+				ImGui::TableNextColumn();
+				ImGui::TextColored(ImColor(255, 220, 100).Value, "%.3f", mPerfStats.mFullFrame.Smoothed);
+				ImGui::TableNextColumn();
+				ImGui::TextColored(ImColor(255, 220, 100).Value, "%.3f", mPerfStats.mFullFrame.Peak);
+
+				ImGui::EndTable();
+			}
+
+			float Gap = mPerfStats.mFullFrame.Smoothed - mPerfStats.mTotal.Smoothed;
+			float GapPeak = mPerfStats.mFullFrame.Peak - mPerfStats.mTotal.Peak;
+			ImGui::Text("Unaccounted (Full Frame - AINB Total): %.3f ms avg, %.3f ms peak", Gap, GapPeak);
+		}
 		ImGui::End();
 	}
 
@@ -1601,6 +1747,7 @@ namespace application::rendering::ainb
 		case AINBFile::NodeTypes::Element_StringSelector:
 		case AINBFile::NodeTypes::Element_RandomSelector:
 		case AINBFile::NodeTypes::Element_Expression:
+		case AINBFile::NodeTypes::UserDefined:
 		{
 			auto& Generic = Consumer->LinkedNodes[(int)AINBFile::LinkedNodeMapping::OutputBoolInputFloatInputLink];
 			bool AlreadyLinked = std::any_of(Generic.begin(), Generic.end(), [&](AINBFile::LinkedNodeInfo& Info) {
@@ -1621,12 +1768,10 @@ namespace application::rendering::ainb
 		}
 	}
 
-	// ValueType and GlobalType enumerate the same six kinds in different orders, so the mapping below converts by conceptual type, not numeric equality.
 	void UIAINBEditor::FixupBlackboardDeletion(uint32_t GlobalType, uint32_t DeletedIndex)
 	{
 		using namespace application::file::game::ainb;
-		static const int GlobalTypeToValueType[6] = { 3, 0, 2, 1, 4, 5 };
-		int ValType = GlobalTypeToValueType[GlobalType];
+		int ValType = AINBFile::GlobalTypeToValueType((uint8_t)GlobalType);
 
 		for (AINBFile::Node& Node : mAINBFile.Nodes)
 		{

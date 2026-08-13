@@ -435,6 +435,7 @@ namespace application::manager
     bool UIMgr::gASTCSupported = false;
     int UIMgr::gThemeIndex = 0;
     int UIMgr::gBackgroundThemeIndex = gDefaultBackgroundThemeIndex;
+    bool UIMgr::gVSyncEnabled = true;
     ImFont* UIMgr::gLogoFont = nullptr;
     ImFont* UIMgr::gHeadingFont = nullptr;
     ImFont* UIMgr::gBigIconFont = nullptr;
@@ -677,6 +678,11 @@ namespace application::manager
 #endif
     }
 
+    void UIMgr::ApplyVSync()
+    {
+        glfwSwapInterval(gVSyncEnabled ? 1 : 0);
+    }
+
 	bool UIMgr::Initialize()
 	{
 		assert(gWindow == nullptr && "UI was already initialized");
@@ -789,7 +795,7 @@ namespace application::manager
 
         gladLoadGL();
 
-        glfwSwapInterval(1); // Enable vsync
+        ApplyVSync(); // Applies gVSyncEnabled's default (true) here - re-applied once its real value is known, after PathConfigFile::Load
 
         int ActualMajor, ActualMinor;
         glGetIntegerv(GL_MAJOR_VERSION, &ActualMajor);
@@ -1070,6 +1076,14 @@ namespace application::manager
                                 ImGui::Checkbox("Enable Projects", &application::manager::ProjectMgr::gProjectsEnabled);
                                 ImGui::TextWrapped("When disabled, the Projects menu is hidden and editors can be opened without selecting a project.");
 
+                                ImGui::NewLine();
+                                if (ImGui::Checkbox("VSync", &application::manager::UIMgr::gVSyncEnabled))
+                                {
+                                    application::manager::UIMgr::ApplyVSync();
+                                    application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
+                                }
+                                ImGui::TextWrapped("Caps the framerate to your monitor's refresh rate. Disabling it can help isolate whether stutter is coming from Starlight itself or from present/vsync.");
+
                                 ImGui::EndTabItem();
                             }
 
@@ -1129,6 +1143,13 @@ namespace application::manager
                                 {
                                     application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
                                 }
+
+                                if (ImGui::Checkbox("Performance Stats", &application::rendering::ainb::UIAINBEditor::gShowPerformanceStats))
+                                {
+                                    application::file::tool::PathConfigFile::Save(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
+                                }
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("Shows a per-frame timing breakdown overlay on the Graph window, for diagnosing stutter.");
 
                                 ImGui::EndTabItem();
                             }

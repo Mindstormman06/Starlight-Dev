@@ -5,6 +5,7 @@
 #include "imgui_stdlib.h"
 #include <rendering/ImGuiExt.h>
 #include <util/Logger.h>
+#include <util/IconsFontAwesome6.h>
 
 namespace application::rendering::ainb
 {
@@ -13,7 +14,27 @@ namespace application::rendering::ainb
         mOutputParameters.resize(6);
         mInputParameters.resize(6);
         mLinkedOutputParams.resize(6);
+
+        mInputLabelCache.resize(6);
+        mOutputLabelCache.resize(6);
+        for (uint8_t i = 0; i < 6; i++)
+        {
+            mInputLabelCache[i].resize(mNode->InputParameters[i].size());
+            mOutputLabelCache[i].resize(mNode->OutputParameters[i].size());
+        }
 	}
+
+    const UIAINBEditorNodeBase::ParamLabelCache& UIAINBEditorNodeBase::GetCachedParamLabel(std::vector<std::vector<ParamLabelCache>>& Cache, uint8_t Type, uint8_t Index, const std::string& Name, const std::string& Class)
+    {
+        ParamLabelCache& Entry = Cache[Type][Index];
+        if (!Entry.Built)
+        {
+            Entry.Label = Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Class : GetValueTypeName(Type)) + ")";
+            Entry.Width = ImGui::CalcTextSize(Entry.Label.c_str()).x;
+            Entry.Built = true;
+        }
+        return Entry;
+    }
 
     UIAINBEditorNodeBase::ResolvedOutputPin UIAINBEditorNodeBase::ResolveLinkedOutputPin(std::vector<std::unique_ptr<UIAINBEditorNodeBase>>& Nodes, int NodeIndex, uint8_t Category, int ParameterIndex)
     {
@@ -127,10 +148,12 @@ namespace application::rendering::ainb
 
     void UIAINBEditorNodeBase::Reset()
     {
+        // mLinkedOutputParams is NOT cleared here - it's a pure function of graph topology, kept
+        // valid across frames and only rebuilt by UIAINBEditor::RefreshLinkedOutputParams() when
+        // the topology actually changes (see mLinkedOutputParamsDirty).
         for (uint8_t i = 0; i < application::file::game::ainb::AINBFile::ValueTypeCount; i++) {
             mOutputParameters[i].clear();
             mInputParameters[i].clear();
-            mLinkedOutputParams[i].clear();
         }
         mOutputFlowParameters.clear();
         mPins.clear();
@@ -161,8 +184,13 @@ namespace application::rendering::ainb
 
 		// Bounds are one frame stale (they predate this frame's layout), so pad the viewport
 		// test a bit to avoid pop-in right at the edges. Margin is meant as screen pixels, so
-		// convert it to canvas units by the current zoom.
-		const float Margin = 64.0f / ed::GetCurrentZoom();
+		// convert it to canvas units by the current zoom - but cap it: at low zoom (e.g. zoomed
+		// out to view a widely spread-out, auto-laid-out graph) that conversion balloons into
+		// hundreds/thousands of canvas units, pulling large numbers of genuinely off-screen nodes
+		// into full per-frame draw cost for a pop-in guard that's imperceptible at that scale anyway.
+		float Margin = 64.0f / ed::GetCurrentZoom();
+		if (Margin > 256.0f)
+			Margin = 256.0f;
 		return NodePos.x + NodeSize.x < ViewportMin.x - Margin || NodePos.x > ViewportMax.x + Margin ||
 		       NodePos.y + NodeSize.y < ViewportMin.y - Margin || NodePos.y > ViewportMax.y + Margin;
 	}
@@ -409,7 +437,7 @@ namespace application::rendering::ainb
         }
     }
 
-    ImRect UIAINBEditorNodeBase::DrawPin(uint32_t Id, bool Connected, uint32_t Alpha, PinType Type, ed::PinKind Kind, std::string Name, bool IsHeaderPin)
+    ImRect UIAINBEditorNodeBase::DrawPin(uint32_t Id, bool Connected, uint32_t Alpha, PinType Type, ed::PinKind Kind, const std::string& Name, bool IsHeaderPin)
     {
         ImVec2 IconPos;
         ImRect InputsRect;
@@ -487,6 +515,54 @@ namespace application::rendering::ainb
         return HeaderPos;
     }
 
+    UIAINBEditorNodeBase::BlackboardChipAction UIAINBEditorNodeBase::DrawBlackboardLinkChip(uint8_t Type, const std::string& Name, uint32_t Id)
+    {
+        BlackboardChipAction Action;
+
+        ImColor Color = GetValueTypeColor(Type);
+        ImGui::TextColored(Color.Value, ICON_FA_LINK " %s", Name.c_str());
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Linked to Blackboard entry \"%s\"\nDrop a different entry here to relink", Name.c_str());
+        Action.Relink = AcceptBlackboardDrop(Type);
+
+        ImGui::SameLine();
+        ImGui::PushID((int)Id);
+        Action.Unlink = ImGui::SmallButton(ICON_FA_LINK_SLASH);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Unlink from Blackboard");
+        ImGui::PopID();
+
+        return Action;
+    }
+
+    std::optional<UIAINBEditorNodeBase::BlackboardLinkTarget> UIAINBEditorNodeBase::AcceptBlackboardDrop(uint8_t Type)
+    {
+        std::optional<BlackboardLinkTarget> Result;
+
+        // Called for every visible input/internal parameter, every frame, regardless of whether
+        // anything is being dragged - on the overwhelming majority of frames nothing is, so bail
+        // out on a single cheap global check before touching the (per-item) BeginDragDropTarget/
+        // EndDragDropTarget pair at all.
+        const ImGuiPayload* ActivePayload = ImGui::GetDragDropPayload();
+        if (ActivePayload == nullptr || !ActivePayload->IsDataType(UIAINBEditor::kBlackboardDragDropId))
+            return Result;
+
+        if (!ImGui::BeginDragDropTarget())
+            return Result;
+
+        if (const ImGuiPayload* Payload = ImGui::AcceptDragDropPayload(UIAINBEditor::kBlackboardDragDropId))
+        {
+            UIAINBEditor::BlackboardDragPayload Dropped = *(const UIAINBEditor::BlackboardDragPayload*)Payload->Data;
+            // A mismatched value type (e.g. a String Blackboard entry dropped on a Float input) is
+            // silently ignored rather than corrupting the parameter.
+            if (application::file::game::ainb::AINBFile::GlobalTypeToValueType((uint8_t)Dropped.GlobalType) == Type)
+                Result = BlackboardLinkTarget{ Dropped.GlobalType, Dropped.Index };
+        }
+
+        ImGui::EndDragDropTarget();
+        return Result;
+    }
+
     void UIAINBEditorNodeBase::DrawInputParameter(uint8_t Type, uint8_t Index)
     {
         // Input param (-> Name [Value])
@@ -518,10 +594,11 @@ namespace application::rendering::ainb
 
         float Alpha = ImGui::GetStyle().Alpha;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, Alpha);
-        // Off-screen: skip the "(Type)" suffix concatenation - the pin still needs to be
-        // submitted every frame (for links), but nobody can read the label right now.
-        DrawPin(mUniqueId++, Param.NodeIndex >= 0 || !Param.Sources.empty(), Alpha * 255, ValueTypeToPinType(Type), ed::PinKind::Input,
-            mIsCulled ? Param.Name : Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")");
+        // The "(Type)" suffix is cached (see GetCachedParamLabel) - Name/Type/Class never change
+        // after the node is constructed, so there's no per-frame cost to reusing the full label
+        // even while off-screen.
+        DrawPin(mUniqueId++, Param.NodeIndex >= 0 || !Param.Sources.empty() || Param.GlobalParametersIndex != 0xFFFF, Alpha * 255, ValueTypeToPinType(Type), ed::PinKind::Input,
+            GetCachedParamLabel(mInputLabelCache, Type, Index, Param.Name, Param.Class).Label);
         ImGui::PopStyleVar();
         mInputParameters[Type].push_back(mUniqueId - 1);
         mPins.insert({ mUniqueId - 1, Pin {.mKind = ed::PinKind::Input, .mType = ValueTypeToPinType(Type), .mNode = mNode, .mObjectPtr = &Param, .mParameterIndex = Index } });
@@ -533,9 +610,50 @@ namespace application::rendering::ainb
             return;
         }
 
-        if (Param.NodeIndex == -1 && Param.Sources.empty()) // Input param is not linked to any output param, so the value has to be set directly
+        auto ApplyBlackboardLink = [this, &Param](const BlackboardLinkTarget& Target)
+        {
+            mOwner->PushUndoSnapshot();
+            Param.GlobalParametersIndex = Target.Index;
+            Param.NodeIndex = -1;
+            Param.ParameterIndex = 0;
+            Param.Sources.clear();
+            Param.EXBIndex = 0xFFFF;
+            Param.Flags.clear();
+        };
+
+        if (Param.NodeIndex == -1 && Param.Sources.empty() && Param.GlobalParametersIndex == 0xFFFF) // Not linked to anything, so the value has to be set directly
         {
             DrawParameterValue(static_cast<application::file::game::ainb::AINBFile::ValueType>(Type), Param.Name, mUniqueId, (void*)&Param.Value);
+            std::optional<BlackboardLinkTarget> Dropped = AcceptBlackboardDrop(Type);
+            if (Dropped && mOwner != nullptr)
+                ApplyBlackboardLink(*Dropped);
+        }
+        else if (Param.NodeIndex == -1 && Param.Sources.empty()) // Linked to a Blackboard entry (GlobalParametersIndex != 0xFFFF)
+        {
+            // Points at the live Name string rather than copying it - it can be renamed via the
+            // Details panel at any time, so it isn't safe to cache the way the pin labels above are.
+            static const std::string kInvalidBlackboardEntry = "<invalid Blackboard entry>";
+            const std::string* EntryName = &kInvalidBlackboardEntry;
+            if (mOwner != nullptr)
+            {
+                auto& Entries = mOwner->mAINBFile.GlobalParameters[application::file::game::ainb::AINBFile::ValueTypeToGlobalType(Type)];
+                if (Param.GlobalParametersIndex < Entries.size())
+                    EntryName = &Entries[Param.GlobalParametersIndex].Name;
+            }
+
+            BlackboardChipAction Action = DrawBlackboardLinkChip(Type, *EntryName, mUniqueId);
+            if (mOwner != nullptr)
+            {
+                if (Action.Unlink)
+                {
+                    mOwner->PushUndoSnapshot();
+                    Param.GlobalParametersIndex = 0xFFFF;
+                }
+                else if (Action.Relink)
+                {
+                    ApplyBlackboardLink(*Action.Relink);
+                }
+            }
         }
         else
         {
@@ -611,7 +729,49 @@ namespace application::rendering::ainb
         ImGui::TextUnformatted(Immediate.Name.c_str());
         ImGui::SameLine();
 
-        DrawParameterValue(static_cast<application::file::game::ainb::AINBFile::ValueType>(Type), Immediate.Name, mUniqueId++, (void*)&Immediate.Value);
+        if (Immediate.GlobalParametersIndex == 0xFFFF)
+        {
+            DrawParameterValue(static_cast<application::file::game::ainb::AINBFile::ValueType>(Type), Immediate.Name, mUniqueId, (void*)&Immediate.Value);
+            std::optional<BlackboardLinkTarget> Dropped = AcceptBlackboardDrop(Type);
+            if (Dropped && mOwner != nullptr)
+            {
+                mOwner->PushUndoSnapshot();
+                Immediate.GlobalParametersIndex = Dropped->Index;
+                Immediate.EXBIndex = 0xFFFF;
+                Immediate.Flags.clear();
+            }
+        }
+        else
+        {
+            // Points at the live Name string rather than copying it - it can be renamed via the
+            // Details panel at any time, so it isn't safe to cache the way the pin labels are.
+            static const std::string kInvalidBlackboardEntry = "<invalid Blackboard entry>";
+            const std::string* EntryName = &kInvalidBlackboardEntry;
+            if (mOwner != nullptr)
+            {
+                auto& Entries = mOwner->mAINBFile.GlobalParameters[application::file::game::ainb::AINBFile::ValueTypeToGlobalType(Type)];
+                if (Immediate.GlobalParametersIndex < Entries.size())
+                    EntryName = &Entries[Immediate.GlobalParametersIndex].Name;
+            }
+
+            BlackboardChipAction Action = DrawBlackboardLinkChip(Type, *EntryName, mUniqueId);
+            if (mOwner != nullptr)
+            {
+                if (Action.Unlink)
+                {
+                    mOwner->PushUndoSnapshot();
+                    Immediate.GlobalParametersIndex = 0xFFFF;
+                }
+                else if (Action.Relink)
+                {
+                    mOwner->PushUndoSnapshot();
+                    Immediate.GlobalParametersIndex = Action.Relink->Index;
+                    Immediate.EXBIndex = 0xFFFF;
+                    Immediate.Flags.clear();
+                }
+            }
+        }
+        mUniqueId++;
     }
 
     void UIAINBEditorNodeBase::DrawInternalParameterSeparator()
@@ -628,19 +788,20 @@ namespace application::rendering::ainb
         //Output param (ParamName (Type/Class) ->)
         application::file::game::ainb::AINBFile::OutputEntry& Param = mNode->OutputParameters[Type][Index];
 
-        // Off-screen: skip the right-alignment text measurement (and the "(Type)" suffix it's
-        // measuring) entirely - the pin still needs to be submitted every frame so links keep
-        // resolving, but exactly where it lands within the node doesn't matter while hidden.
+        // Label/width are cached (see GetCachedParamLabel) - Name/Type/Class never change after
+        // the node is constructed, so this is a lookup rather than a rebuild+remeasure every frame.
+        const ParamLabelCache& LabelCache = GetCachedParamLabel(mOutputLabelCache, Type, Index, Param.Name, Param.Class);
+
         if (!mIsCulled)
         {
-            float Offset = (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - ed::GetStyle().NodePadding.x - ed::GetStyle().NodeBorderWidth - 24.0f * ImGui::GetPlatformIO().Monitors[0].DpiScale - ImGui::GetStyle().ItemSpacing.x * 2.0f - ImGui::CalcTextSize((Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")").c_str()).x;
+            float Offset = (mNodeShapeInfo.mHeaderMax.x - mNodeShapeInfo.mHeaderMin.x) - ed::GetStyle().NodePadding.x - ed::GetStyle().NodeBorderWidth - 24.0f * ImGui::GetPlatformIO().Monitors[0].DpiScale - ImGui::GetStyle().ItemSpacing.x * 2.0f - LabelCache.Width;
             if(Offset > 0)
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + Offset);
         }
         float Alpha = ImGui::GetStyle().Alpha;
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, Alpha);
         DrawPin(mUniqueId++, std::find(mLinkedOutputParams[Type].begin(), mLinkedOutputParams[Type].end(), Index) != mLinkedOutputParams[Type].end(), Alpha * 255, ValueTypeToPinType(Type), ed::PinKind::Output,
-            mIsCulled ? Param.Name : Param.Name + " (" + (Type == (int)application::file::game::ainb::AINBFile::ValueType::UserDefined ? Param.Class : GetValueTypeName(Type)) + ")");
+            LabelCache.Label);
         ImGui::PopStyleVar();
         mOutputParameters[Type].push_back(mUniqueId - 1);
         mPins.insert({ mUniqueId - 1, Pin {.mKind = ed::PinKind::Output, .mType = ValueTypeToPinType(Type), .mNode = mNode, .mObjectPtr = &Param, .mParameterIndex = Index } });

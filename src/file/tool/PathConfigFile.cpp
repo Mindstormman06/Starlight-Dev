@@ -27,9 +27,9 @@ namespace application::file::tool
 		}
 
 		uint8_t Version = Reader.ReadUInt8();
-		if (Version != 0x02 && Version != 0x03 && Version != 0x04 && Version != 0x05 && Version != 0x06 && Version != 0x07)
+		if (Version != 0x02 && Version != 0x03 && Version != 0x04 && Version != 0x05 && Version != 0x06 && Version != 0x07 && Version != 0x08 && Version != 0x09)
 		{
-			application::util::Logger::Error("PathConfig", "Version invalid, expected 0x02 through 0x07. Please delete the path config file and reconfigure your paths");
+			application::util::Logger::Error("PathConfig", "Version invalid, expected 0x02 through 0x09. Please delete the path config file and reconfigure your paths");
 			return;
 		}
 
@@ -65,6 +65,12 @@ namespace application::file::tool
 		if (Version >= 0x07)
 			application::rendering::ainb::UIAINBEditor::gEnableCullingOptimization = Reader.ReadUInt8() != 0;
 
+		if (Version >= 0x08)
+			application::rendering::ainb::UIAINBEditor::gShowPerformanceStats = Reader.ReadUInt8() != 0;
+
+		if (Version >= 0x09)
+			application::manager::UIMgr::gVSyncEnabled = Reader.ReadUInt8() != 0;
+
 		application::util::FileUtil::ValidatePaths();
 
 		application::util::Logger::Info("PathConfig", "Loaded paths");
@@ -75,7 +81,7 @@ namespace application::file::tool
 		application::util::BinaryVectorWriter Writer;
 
 		Writer.WriteBytes("EPATHCFG"); //Magic
-		Writer.WriteInteger(0x07, sizeof(uint8_t)); //Version
+		Writer.WriteInteger(0x09, sizeof(uint8_t)); //Version
 
 		Writer.WriteInteger(application::util::FileUtil::gRomFSPath.size(), sizeof(uint16_t));
 
@@ -90,6 +96,8 @@ namespace application::file::tool
 			Writer.WriteInteger(static_cast<uint8_t>(Type), sizeof(uint8_t));
 
 		Writer.WriteInteger(application::rendering::ainb::UIAINBEditor::gEnableCullingOptimization ? 1 : 0, sizeof(uint8_t));
+		Writer.WriteInteger(application::rendering::ainb::UIAINBEditor::gShowPerformanceStats ? 1 : 0, sizeof(uint8_t));
+		Writer.WriteInteger(application::manager::UIMgr::gVSyncEnabled ? 1 : 0, sizeof(uint8_t));
 
 		application::util::FileUtil::WriteFile(Path, Writer.GetData());
 

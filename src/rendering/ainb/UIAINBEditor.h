@@ -21,6 +21,11 @@ namespace application::rendering::ainb
 {
 	class UIAINBEditor : public UIWindowBase
 	{
+		// UIAINBEditorNodeBase's draw code needs to reach mAINBFile.GlobalParameters (to resolve a
+		// Blackboard entry's display name) and PushUndoSnapshot() (for Blackboard-link drops), both
+		// private below - mirrors how freely this class already reaches into UIAINBEditorNodeBase's
+		// own public fields (mNode/mLinks/mPins) in the other direction.
+		friend class UIAINBEditorNodeBase;
 	public:
 		enum class NewNodeToLinkState : uint8_t
 		{
@@ -58,6 +63,9 @@ namespace application::rendering::ainb
 		static void Initialize();
 
 		static inline bool gEnableCullingOptimization = true;
+		// Shows a per-frame timing breakdown overlay on the Graph window (Preferences > Starlight >
+		// AINB > Performance Stats), for diagnosing where frame time actually goes.
+		static inline bool gShowPerformanceStats = false;
 
 		static const char* gCategoryDropdownItems[3];
 		static const char* gValueTypeDropdownItems[6];
@@ -87,6 +95,18 @@ namespace application::rendering::ainb
 			DetailsEditorContentType mType = DetailsEditorContentType::NONE;
 			std::variant<int, DetailsEditorContentEntryPoint, DetailsEditorContentBlackBoard> mContent = 0;
 		};
+
+	public:
+		// Drag payload for dragging a Local Blackboard entry onto a node's input/internal parameter
+		// to link it. Addressed by (GlobalType, Index) rather than a raw GlobalEntry* so it stays
+		// valid even if GlobalParameters reallocates mid-drag.
+		static constexpr const char* kBlackboardDragDropId = "AINB_BLACKBOARD_ENTRY";
+		struct BlackboardDragPayload
+		{
+			uint32_t GlobalType;
+			uint32_t Index;
+		};
+	private:
 		
 		struct GraphRenderAction
 		{
@@ -128,6 +148,60 @@ namespace application::rendering::ainb
 			std::set<VisualNode*> Nodes;  // all nodes belonging to this command
 			glm::vec4 Bounds;  // x, y, w, h
 		};
+
+		// Recomputes every node's mLinkedOutputParams (which output pins have an incoming link,
+		// purely a function of graph topology) from scratch. Only needs to run when the topology
+		// could have changed, not every frame - see mLinkedOutputParamsDirty.
+		void RefreshLinkedOutputParams();
+		bool mLinkedOutputParamsDirty = true;
+
+		// Per-frame timing breakdown for DrawGraphWindow, shown when gShowPerformanceStats is on.
+		// Smoothed average tracks steady-state cost; Peak tracks the worst frame seen in the current
+		// ~1 second window (reset by PerfStats::TickPeakWindow) - averaging alone would wash out the
+		// exact intermittent spikes this is meant to help find.
+		struct TimedValue
+		{
+			float Smoothed = 0.0f;
+			float Peak = 0.0f;
+			void Update(float Ms)
+			{
+				Smoothed = Smoothed * 0.9f + Ms * 0.1f;
+				if (Ms > Peak)
+					Peak = Ms;
+			}
+		};
+		struct PerfStats
+		{
+			TimedValue mReset;
+			TimedValue mLinkRefresh;
+			TimedValue mNodeDraw;
+			TimedValue mRenderLinks;
+			TimedValue mInteraction; // everything else between RenderLinks and ed::End (link creation, context menus, popups)
+			TimedValue mEdEnd; // the vendored node-editor library's own end-of-frame cost (sort + channel splitter), not Starlight's code
+			TimedValue mTotal;
+			// The real wall-clock time between successive frames (ImGui's own io.DeltaTime) -
+			// covers the ENTIRE frame, not just DrawGraphWindow: other panels, ImGui::Render(),
+			// the GL submission, and glfwSwapBuffers' vsync wait. If this spikes while mTotal
+			// doesn't, the stutter is happening outside Starlight's AINB draw code entirely -
+			// most likely GPU present/vsync, not CPU work we can instrument here.
+			TimedValue mFullFrame;
+			int mVisibleNodeCount = 0;
+			int mTotalNodeCount = 0;
+			float mZoom = 1.0f; // captured while mNodeEditorContext is current - DrawPerformanceStatsOverlay() runs after ed::SetCurrentEditor(nullptr)
+			float mPeakWindowElapsed = 0.0f;
+
+			void TickPeakWindow(float DeltaTimeSeconds)
+			{
+				mPeakWindowElapsed += DeltaTimeSeconds;
+				if (mPeakWindowElapsed < 1.0f)
+					return;
+
+				mPeakWindowElapsed = 0.0f;
+				mReset.Peak = mLinkRefresh.Peak = mNodeDraw.Peak = mRenderLinks.Peak = mInteraction.Peak = mEdEnd.Peak = mTotal.Peak = mFullFrame.Peak = 0.0f;
+			}
+		};
+		PerfStats mPerfStats;
+		void DrawPerformanceStatsOverlay();
 
 		void GraphDeselect(bool Nodes = true, bool Links = true);
 		void DeleteNode(ed::NodeId NodeId, bool PushSnapshot = true);

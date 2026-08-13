@@ -361,11 +361,18 @@ bool ImGuiExt::SelectableTextOffset(const char* label, float offsetX, bool selec
     return pressed; //-V1020
 }
 
-bool ImGuiExt::SelectableTextOffsetWithDeleteButton(const char* label, float offsetX, std::function<void()> onDeletePressed, bool selected, ImGuiSelectableFlags flags, const ImVec2& size)
+bool ImGuiExt::SelectableTextOffsetWithDeleteButton(const char* label, float offsetX, std::function<void()> onDeletePressed, bool selected, ImGuiSelectableFlags flags, const ImVec2& size, std::function<void()> onDragSource)
 {
     ImVec2 Pos = ImGui::GetCursorPos();
     ImGui::SetNextItemAllowOverlap();
     bool Result = SelectableTextOffset(label, offsetX, selected, flags, size);
+
+    if (onDragSource && ImGui::BeginDragDropSource())
+    {
+        onDragSource();
+        ImGui::EndDragDropSource();
+    }
+
     ImVec2 Size = ImGui::GetItemRectSize();
     ImVec2 ReturnPos = ImGui::GetCursorPos();
 

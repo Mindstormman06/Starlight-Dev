@@ -383,6 +383,15 @@ namespace application::manager
         return &gActorInfoEntries[Gyml];
     }
 
+    ActorInfoMgr::ActorInfoEntry* ActorInfoMgr::FindActorInfo(const std::string& Gyml)
+    {
+        auto Iter = gActorInfoEntries.find(Gyml);
+        if (Iter == gActorInfoEntries.end())
+            return nullptr;
+
+        return &Iter->second;
+    }
+
     void ActorInfoMgr::Initialize()
     {
         application::file::game::byml::BymlFile ActorInfoByml(application::file::game::ZStdBackend::Decompress(application::util::FileUtil::GetRomFSFilePath("RSDB/ActorInfo.Product." + application::Editor::gInternalGameVersion + ".rstbl.byml.zs")));

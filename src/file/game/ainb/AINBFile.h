@@ -370,6 +370,11 @@ namespace application::file::game::ainb
 
 		static std::string NodeTypeToString(AINBFile::NodeTypes Type);
 		static std::string ValueToString(AINBFile::AINBValue Value);
+		// ValueType and GlobalType enumerate the same six kinds in different orders, so these convert
+		// by conceptual type, not numeric equality, between a Node's InputParameters/ImmediateParameters
+		// bucket index (ValueType) and a GlobalParameters bucket index (GlobalType).
+		static uint8_t GlobalTypeToValueType(uint8_t GlobalType);
+		static uint8_t ValueTypeToGlobalType(uint8_t ValueType);
 		std::string ReadStringFromStringPool(application::util::BinaryVectorReader* Reader, uint32_t Offset);
 		GUIDData ReadGUID(application::util::BinaryVectorReader* Reader);
 		Node& GetBaseNode();

@@ -23,7 +23,7 @@ namespace application::manager
 
 			gActorPacks.emplace(Gyml, application::util::FileUtil::GetRomFSFilePath("Pack/Actor/" + Gyml + ".pack.zs"));
 
-			if (application::manager::ActorInfoMgr::ActorInfoEntry* Entry = application::manager::ActorInfoMgr::GetActorInfo(Gyml); Entry != nullptr)
+			if (application::manager::ActorInfoMgr::ActorInfoEntry* Entry = application::manager::ActorInfoMgr::FindActorInfo(Gyml); Entry != nullptr)
 			{
 				gActorPacks[Gyml].mNeedsPhysicsHash |= Entry->mCategory == application::manager::ActorInfoMgr::ActorInfoEntry::Category::Animal ||
 					Entry->mCategory == application::manager::ActorInfoMgr::ActorInfoEntry::Category::NPC ||

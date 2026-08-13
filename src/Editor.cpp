@@ -166,6 +166,7 @@ namespace application
         application::file::tool::PathConfigFile::Load(application::util::FileUtil::GetWorkingDirFilePath("Config.epathcfg"));
         application::manager::UIMgr::ApplyBackgroundTheme(application::manager::UIMgr::gBackgroundThemeIndex);
         application::manager::UIMgr::ApplyTheme(application::manager::UIMgr::gThemeIndex);
+        application::manager::UIMgr::ApplyVSync();
         application::file::tool::TkmmConfigPaths::TryPrefillRomFsFromTkmm();
         application::file::tool::GitIdentityFile::Load(application::util::FileUtil::GetWorkingDirFilePath("Identity.egit"));
         application::file::tool::LicenseFile::gNoLicenseFileFound = !application::util::FileUtil::FileExists(application::util::FileUtil::GetWorkingDirFilePath("License.elicense"));

@@ -450,16 +450,6 @@ namespace application::manager
             Entry.Class = Def.mClass;
             Entry.ValueType = (int)Def.mValueType;
             Entry.Flags = Def.mFlags;
-            for (auto Iter = Entry.Flags.begin(); Iter != Entry.Flags.end(); )
-            {
-                if (((application::file::game::ainb::AINBFile::FlagsStruct)*Iter) == application::file::game::ainb::AINBFile::FlagsStruct::SetPointerFlagBitZero)
-                {
-                    Iter = Entry.Flags.erase(Iter);
-                    continue;
-                }
-                
-                Iter++;
-            }
 
             SetDefaultValue(Entry.Value, Def.mValueType);
 

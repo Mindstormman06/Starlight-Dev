@@ -20,7 +20,10 @@ namespace ImGuiExt
 	IMGUI_API bool InputFloat3Colored(const char* Label, float Values[3], ImVec4 ColorA, ImVec4 ColorB, ImVec4 ColorC, bool CopyPastePopUp = false);
 	IMGUI_API void CheckVec3fInputRightClick(const std::string& Id, float Values[3], bool ConvertAngles = false);
 	IMGUI_API bool SelectableTextOffset(const char* label, float offsetX, bool selected = false, ImGuiSelectableFlags flags = 0, const ImVec2& size = ImVec2(0, 0));
-	IMGUI_API bool SelectableTextOffsetWithDeleteButton(const char* label, float offsetX, std::function<void()> onDeletePressed, bool selected = false, ImGuiSelectableFlags flags = 0, const ImVec2& size = ImVec2(0, 0));
+	// onDragSource, if set, is invoked inside a BeginDragDropSource()/EndDragDropSource() block
+	// right after the row's Selectable() is submitted - callers should call ImGui::SetDragDropPayload
+	// (and optionally a preview widget) from inside it.
+	IMGUI_API bool SelectableTextOffsetWithDeleteButton(const char* label, float offsetX, std::function<void()> onDeletePressed, bool selected = false, ImGuiSelectableFlags flags = 0, const ImVec2& size = ImVec2(0, 0), std::function<void()> onDragSource = nullptr);
 	IMGUI_API bool InputScalarNWidth(const char* label, ImGuiDataType data_type, void* p_data, int components, float ItemWidth, const void* p_step = NULL, const void* p_step_fast = NULL, const char* format = NULL, ImGuiInputTextFlags flags = 0);
 	IMGUI_API bool CollapsingHeaderWithAddButton(const char* label, ImGuiTreeNodeFlags flags, std::function<void()> onButtonPressed);
 	IMGUI_API bool ButtonDelete(const char* Label, const ImVec2& Size);

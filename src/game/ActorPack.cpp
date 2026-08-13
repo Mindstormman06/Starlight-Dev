@@ -28,13 +28,25 @@ namespace application::game
 
 			if (PhiveControllerFile.HasChild("RigidBodyEntityNamePathAry"))
 			{
+				// "Physical" is the actual dynamic rigid body entry - its param file is the one
+				// with MotionType. "Collision"-only entries are static hit-detection shapes with
+				// no MotionType, so a "Physical" match must always win regardless of array order;
+				// previously this just kept overwriting with the last Physical-or-Collision match,
+				// so an actor whose array happened to list Collision after Physical would silently
+				// end up checking the wrong file and never detect it needs a physics hash.
 				for (auto& Child : PhiveControllerFile.GetNode("RigidBodyEntityNamePathAry")->GetChildren())
 				{
 					std::string Name = Child.GetChild("Name")->GetValue<std::string>();
-					if (Name.find("Physical") == std::string::npos && Name.find("Collision") == std::string::npos)
-						continue;
-					
-					mRigidBodyEntityParamBymlName = Child.GetChild("FilePath")->GetValue<std::string>();
+					if (Name.find("Physical") != std::string::npos)
+					{
+						mRigidBodyEntityParamBymlName = Child.GetChild("FilePath")->GetValue<std::string>();
+						break;
+					}
+
+					if (Name.find("Collision") != std::string::npos && mRigidBodyEntityParamBymlName.empty())
+					{
+						mRigidBodyEntityParamBymlName = Child.GetChild("FilePath")->GetValue<std::string>();
+					}
 				}
 			}
 

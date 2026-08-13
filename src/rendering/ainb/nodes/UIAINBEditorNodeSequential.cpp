@@ -6,7 +6,9 @@ namespace application::rendering::ainb::nodes
 {
     UIAINBEditorNodeSequential::UIAINBEditorNodeSequential(int UniqueId, application::file::game::ainb::AINBFile::Node& Node) : UIAINBEditorNodeBase(UniqueId, Node)
     {
-        mSeqCount = std::max((int)2, (int)Node.LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size());
+        // At least one Seq output is required, not two - real game files legitimately ship
+        // single-connection Sequential nodes.
+        mSeqCount = std::max((int)1, (int)Node.LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size());
     }
 
     void UIAINBEditorNodeSequential::DrawImpl()
@@ -27,7 +29,7 @@ namespace application::rendering::ainb::nodes
             }
             ImGui::PopStyleColor();
             ImGui::SameLine();
-            if(mSeqCount <= 2)
+            if(mSeqCount <= 1)
                 ImGui::BeginDisabled();
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.47f, 0.07f, 0.07f, 1.0f));
             if(ImGui::Button(("-##" + std::to_string(mNode->NodeIndex)).c_str()))
@@ -36,7 +38,7 @@ namespace application::rendering::ainb::nodes
                 if (mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].size() >= mSeqCount)
                     mNode->LinkedNodes[(int)application::file::game::ainb::AINBFile::LinkedNodeMapping::StandardLink].resize(mSeqCount);
             }
-            else if(mSeqCount <= 2)
+            else if(mSeqCount <= 1)
             {
                 ImGui::EndDisabled();
             }

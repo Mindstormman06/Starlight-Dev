@@ -24,6 +24,7 @@ namespace application::manager
 		extern bool gASTCSupported;
 		extern int gThemeIndex;
 		extern int gBackgroundThemeIndex;
+		extern bool gVSyncEnabled;
 		extern ImFont* gLogoFont;
 		extern ImFont* gHeadingFont;
 		extern ImFont* gBigIconFont;
@@ -55,6 +56,11 @@ namespace application::manager
 		const char* GetBackgroundThemeName(int Index);
 		ImVec4 GetNodeEditorBgColor();
 		ImVec4 GetNodeEditorGridColor();
+
+		// Applies gVSyncEnabled to the current GL context (glfwSwapInterval). Call after changing
+		// gVSyncEnabled, and once after loading it from PathConfigFile since the window/context
+		// already exists by then (same pattern as ApplyTheme/ApplyBackgroundTheme).
+		void ApplyVSync();
 
 		std::unique_ptr<application::rendering::UIWindowBase>& OpenWindow(std::unique_ptr<application::rendering::UIWindowBase> Window);
 		void UpdateWaitingWindows();

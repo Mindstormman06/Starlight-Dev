@@ -47,13 +47,21 @@ namespace application::game::actor_component
 
 			if (PhiveControllerFile.HasChild("ShapeNamePathAry") && mPhiveShapeBymlName.empty())
 			{
+				// Same "Physical" > "Collision" preference as ActorPack::GetRigidBodyEntityParamBymlName -
+				// take the actual dynamic entry over a static collision-only one regardless of array order.
 				for (auto& Child : PhiveControllerFile.GetNode("ShapeNamePathAry")->GetChildren())
 				{
 					std::string Name = Child.GetChild("Name")->GetValue<std::string>();
-					if (Name.find("Physical") == std::string::npos && Name.find("Collision") == std::string::npos)
-						continue;
+					if (Name.find("Physical") != std::string::npos)
+					{
+						mPhiveShapeBymlName = Child.GetChild("FilePath")->GetValue<std::string>();
+						break;
+					}
 
-					mPhiveShapeBymlName = Child.GetChild("FilePath")->GetValue<std::string>();
+					if (Name.find("Collision") != std::string::npos && mPhiveShapeBymlName.empty())
+					{
+						mPhiveShapeBymlName = Child.GetChild("FilePath")->GetValue<std::string>();
+					}
 				}
 			}
 
