@@ -204,6 +204,10 @@ namespace application::rendering::ainb
 		void DrawPerformanceStatsOverlay();
 
 		void GraphDeselect(bool Nodes = true, bool Links = true);
+		// Entry Point commands reference nodes by index; the game requires those nodes to carry the IsResidentNode
+		// flag or it crashes when EventFlow reaches them, so the UI must set/clear it manually here instead of
+		// deriving it automatically, since Read/Write no longer sync it from Command residency booleans.
+		void SetNodeResidentFlag(int NodeIndex, bool Resident);
 		void DeleteNode(ed::NodeId NodeId, bool PushSnapshot = true);
 		void DeleteNodeLink(ed::LinkId LinkId, bool PushSnapshot = true);
 		// Copies a node's type/name/parameter values with all connections and identity stripped; Paste appends a fresh instance of it.

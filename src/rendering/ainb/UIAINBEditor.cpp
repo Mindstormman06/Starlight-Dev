@@ -1337,6 +1337,9 @@ namespace application::rendering::ainb
 						Cmd.IsRightNodeResident = false;
 						Cmd.RightNodeIndex = -1;
 						Cmd.Name = Name;
+
+						SetNodeResidentFlag(Cmd.LeftNodeIndex, true);
+
 						mAINBFile.Commands.push_back(Cmd);
 
 						DetailsEditorContentEntryPoint Point;
@@ -1938,6 +1941,20 @@ namespace application::rendering::ainb
 		ed::SetNodePosition(mNodes[mAINBFile.Nodes.size() - 1]->mNodeId, Position);
 	}
 
+	void UIAINBEditor::SetNodeResidentFlag(int NodeIndex, bool Resident)
+	{
+		if (NodeIndex < 0 || NodeIndex >= (int)mAINBFile.Nodes.size())
+			return;
+
+		std::vector<application::file::game::ainb::AINBFile::FlagsStruct>& Flags = mAINBFile.Nodes[NodeIndex].Flags;
+		bool HasFlag = std::find(Flags.begin(), Flags.end(), application::file::game::ainb::AINBFile::FlagsStruct::IsResidentNode) != Flags.end();
+
+		if (Resident && !HasFlag)
+			Flags.push_back(application::file::game::ainb::AINBFile::FlagsStruct::IsResidentNode);
+		else if (!Resident && HasFlag)
+			Flags.erase(std::remove(Flags.begin(), Flags.end(), application::file::game::ainb::AINBFile::FlagsStruct::IsResidentNode), Flags.end());
+	}
+
 	void UIAINBEditor::DeleteNode(ed::NodeId NodeId, bool PushSnapshot)
 	{
 		application::file::game::ainb::AINBFile::Node* NodePtr = nullptr;
@@ -2114,17 +2131,12 @@ namespace application::rendering::ainb
 					ImGui::TableNextColumn();
 
 					ImGui::PushItemWidth(ImGui::GetCurrentTable()->Columns[1].WidthMax);
-					int16_t OldNodeIndex = std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->LeftNodeIndex;
-					if(ImGui::InputScalar(CreateID("##EntryPointLeftNodeIndex").c_str(), ImGuiDataType_S16, &(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->LeftNodeIndex), nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal))
+					application::file::game::ainb::AINBFile::Command* EntryPointCmd = std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand;
+					int16_t OldNodeIndex = EntryPointCmd->LeftNodeIndex;
+					if(ImGui::InputScalar(CreateID("##EntryPointLeftNodeIndex").c_str(), ImGuiDataType_S16, &(EntryPointCmd->LeftNodeIndex), nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal))
 					{
-						if (mAINBFile.Nodes.size() > OldNodeIndex && OldNodeIndex >= 0)
-						{
-							mAINBFile.Nodes[OldNodeIndex].Flags.erase(std::remove_if(
-								mAINBFile.Nodes[OldNodeIndex].Flags.begin(), mAINBFile.Nodes[OldNodeIndex].Flags.end(),
-								[](const application::file::game::ainb::AINBFile::FlagsStruct& Flag) {
-									return Flag == application::file::game::ainb::AINBFile::FlagsStruct::IsResidentNode;
-								}), mAINBFile.Nodes[OldNodeIndex].Flags.end());
-						}
+						SetNodeResidentFlag(OldNodeIndex, false);
+						SetNodeResidentFlag(EntryPointCmd->LeftNodeIndex, EntryPointCmd->IsLeftNodeResident);
 
 						if(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->LeftNodeIndex >= 0 && mNodes.size() > std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->LeftNodeIndex)
 						{
@@ -2156,20 +2168,29 @@ namespace application::rendering::ainb
 					ImGui::TableNextRow();
 
 					ImGui::TableSetColumnIndex(0);
+					application::file::game::ainb::AINBFile::Command* EntryPointCmd = std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand;
+
 					ImGui::Text("Is Left Node Resident");
 					ImGui::TableNextColumn();
-					ImGui::Checkbox(CreateID("##EntryPointLeftResident").c_str(), &(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->IsLeftNodeResident));
+					if(ImGui::Checkbox(CreateID("##EntryPointLeftResident").c_str(), &(EntryPointCmd->IsLeftNodeResident)))
+						SetNodeResidentFlag(EntryPointCmd->LeftNodeIndex, EntryPointCmd->IsLeftNodeResident);
 					ImGui::TableNextColumn();
 
 					ImGui::Text("Is Right Node Resident");
 					ImGui::TableNextColumn();
-					ImGui::Checkbox(CreateID("##EntryPointRightResident").c_str(), &(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->IsRightNodeResident));
+					if(ImGui::Checkbox(CreateID("##EntryPointRightResident").c_str(), &(EntryPointCmd->IsRightNodeResident)))
+						SetNodeResidentFlag(EntryPointCmd->RightNodeIndex, EntryPointCmd->IsRightNodeResident);
 					ImGui::TableNextColumn();
 
 					ImGui::Text("Right Node Index");
 					ImGui::TableNextColumn();
 					ImGui::PushItemWidth(ImGui::GetCurrentTable()->Columns[1].WidthMax);
-					ImGui::InputScalar(CreateID("##EntryPointRightNodeIndex").c_str(), ImGuiDataType_S16, &(std::get<DetailsEditorContentEntryPoint>(mDetailsEditorContent.mContent).mCommand->RightNodeIndex), nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal);
+					int16_t OldRightNodeIndex = EntryPointCmd->RightNodeIndex;
+					if(ImGui::InputScalar(CreateID("##EntryPointRightNodeIndex").c_str(), ImGuiDataType_S16, &(EntryPointCmd->RightNodeIndex), nullptr, nullptr, nullptr, ImGuiInputTextFlags_CharsDecimal))
+					{
+						SetNodeResidentFlag(OldRightNodeIndex, false);
+						SetNodeResidentFlag(EntryPointCmd->RightNodeIndex, EntryPointCmd->IsRightNodeResident);
+					}
 					ImGui::PopItemWidth();
 
 					ImGui::EndTable();
